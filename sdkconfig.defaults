@@ -1,0 +1,76 @@
+# ---- Target ----
+CONFIG_IDF_TARGET="esp32s3"
+
+# ---- Flash (16 MB, QIO 80 MHz) ----
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# ---- PSRAM (8 MB Octal @ 80 MHz) ----
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+
+# Required for stable PSRAM @ 80 MHz (per Waveshare reference)
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+
+# ---- CPU ----
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+
+# ---- Partitions ----
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ---- LVGL v8 ----
+CONFIG_LV_COLOR_DEPTH_16=y
+CONFIG_LV_COLOR_16_SWAP=n
+CONFIG_LV_MEM_CUSTOM=y
+CONFIG_LV_MEMCPY_MEMSET_STD=y
+CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y
+CONFIG_LV_USE_LOG=y
+CONFIG_LV_LOG_PRINTF=y
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_24=y
+CONFIG_LV_FONT_MONTSERRAT_40=y
+
+# Enable compressed-font decoder so custom fonts generated with
+# lv_font_conv's default compression (e.g. the owner-name cursive)
+# actually render instead of showing blanks.
+CONFIG_LV_USE_FONT_COMPRESSED=y
+
+# ---- LCD RGB ----
+CONFIG_LCD_RGB_ISR_IRAM_SAFE=y
+
+# ---- Flash / NVS safety while RGB DMA is running ----
+# The RGB LCD ISR (IRAM-safe) still needs to read the PSRAM-resident
+# bounce buffer on every EOF interrupt. A normal NVS / SPI-flash write
+# disables the cache globally and would make that PSRAM access blow up
+# with "Cache disabled but cached memory region accessed". Auto-suspend
+# lets the flash controller pause its erase/program cycle so cache can
+# be serviced mid-write, which is exactly what NVS commits need.
+CONFIG_SPI_FLASH_AUTO_SUSPEND=y
+
+# ---- TLS trust store ----
+# Render.com's edge presents this chain for *.onrender.com:
+#   leaf (CN=onrender.com, ECDSA)
+#     -> WE1 (Google Trust Services, ECDSA)
+#       -> GTS Root R4 *cross-signed by GlobalSign Root CA (1998, SHA-1)*
+# The bundled CA store (DEFAULT_FULL) contains the self-signed GTS Root R4
+# and GlobalSign R3/R6, but NOT the legacy GlobalSign Root CA that signed
+# the cross-signed GTS R4 the server delivers. Without this flag mbedtls
+# cannot terminate the chain and esp-x509-crt-bundle logs
+#   "No matching trusted root certificate found"
+# followed by a fatal alert.
+# CROSS_SIGNED_VERIFY switches esp_crt_bundle to ca_cb mode: the CA lookup
+# is done by Subject DN, so mbedtls finds our bundled self-signed GTS R4
+# (same public key) and verification succeeds.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
+
+# ---- Log ----
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y

@@ -1,0 +1,29 @@
+# Build output
+build/
+managed_components/
+dependencies.lock
+sdkconfig
+sdkconfig.old
+
+# IDE / editor
+.vscode/
+.idea/
+*.code-workspace
+
+# Binaries
+*.bin
+*.elf
+*.map
+
+# Logs & debug captures
+*.log
+*.txt
+!CMakeLists.txt
+!partitions.csv
+!sdkconfig.defaults
+cap.py
+serial_log.ps1
+
+# Python cache
+__pycache__/
+*.pyc
