@@ -67,6 +67,22 @@ esp_err_t hyperwisor_init(void)
     /* No built-in GPIO/OTA/SYSTEM handlers registered on S3 port.
      * Application registers its own handlers via hyperwisor_register_cmd_handler(). */
 
+#if CONFIG_HYPERWISOR_ENABLE_OTA
+    /* Auto-register the OTA_UPDATE command handler.
+     * After an OTA reboot, also confirm the new image is good
+     * so the bootloader doesn't roll back. */
+    extern void hyperwisor_ota_auto_register(void);
+    extern void hyperwisor_ota_confirm_good_boot(void);
+    hyperwisor_ota_auto_register();
+    hyperwisor_ota_confirm_good_boot();
+#endif
+
+#if CONFIG_HYPERWISOR_ENABLE_SYSTEM
+    /* Auto-register the SYSTEM command handler (restart, status, info). */
+    extern void hyperwisor_cmd_handle_system(const char *from, cJSON *payload);
+    hyperwisor_register_cmd_handler("SYSTEM", hyperwisor_cmd_handle_system);
+#endif
+
     ESP_LOGI(TAG, "Hyperwisor core initialized");
     return ESP_OK;
 }
@@ -266,7 +282,7 @@ void hyperwisor_task(void *pvParam)
         if (s_state.wifi_connected && !hyperwisor_ws_is_started() && strlen(s_state.device_id) > 0) {
             ESP_LOGI(TAG, "Starting WebSocket client for device %s", s_state.device_id);
             hyperwisor_ws_connect_with_device_id(
-                "nikolaindustry-realtime.onrender.com", 443, s_state.device_id);
+                CONFIG_HYPERWISOR_WS_HOST, CONFIG_HYPERWISOR_WS_PORT, s_state.device_id);
         }
 
         /* AP mode timeout: reboot after 4 minutes if still in AP */
@@ -312,7 +328,7 @@ static void on_wifi_event(hyperwisor_wifi_event_t evt, void *data)
         ESP_LOGI(TAG, "Got IP address");
         if (strlen(s_state.device_id) > 0) {
             hyperwisor_ws_connect_with_device_id(
-                "nikolaindustry-realtime.onrender.com", 443, s_state.device_id);
+                CONFIG_HYPERWISOR_WS_HOST, CONFIG_HYPERWISOR_WS_PORT, s_state.device_id);
         }
         break;
 

@@ -1,4 +1,4 @@
-$env:PATH = "C:\Espressif\tools\cmake\3.30.2\bin;C:\Espressif\tools\ninja\1.12.1;C:\Espressif\tools\xtensa-esp-elf\esp-14.2.0_20251107\xtensa-esp-elf\bin;C:\Espressif\tools\python\v6.0.1\venv\Scripts;" + $env:PATH
+$env:PATH = "C:\Espressif\tools\cmake\3.30.2\bin;C:\Espressif\tools\ninja\1.12.1;C:\Espressif\tools\xtensa-esp-elf\esp-15.2.0_20251204\xtensa-esp-elf\bin;C:\Espressif\tools\python\v6.0.1\venv\Scripts;" + $env:PATH
 $env:IDF_PATH = "C:\esp\v6.0.1\esp-idf"
 $env:IDF_TOOLS_PATH = "C:\Espressif\tools"
 Set-Location "c:\Users\user\Downloads\esp32_p4_deom\hyperwisor_s3"

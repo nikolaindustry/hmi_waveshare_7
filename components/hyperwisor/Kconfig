@@ -1,0 +1,98 @@
+menu "Hyperwisor IoT"
+
+# --------------- Core (always on) ---------------
+
+config HYPERWISOR_CMD_MAX_HANDLERS
+    int "Maximum number of command handlers"
+    default 16
+    range 1 64
+    help
+      Upper bound on the number of cloud command handlers that can be
+      registered via hyperwisor_register_cmd_handler(). Each handler
+      consumes a small fixed slot. 16 is enough for most projects.
+
+config HYPERWISOR_WS_HOST
+    string "WebSocket server hostname"
+    default "nikolaindustry-realtime.onrender.com"
+    help
+      Hostname of the Hyperwisor realtime server. The library connects
+      to wss://<host>:<port>/?id=<deviceId>.
+
+config HYPERWISOR_WS_PORT
+    int "WebSocket server port"
+    default 443
+    range 1 65535
+
+# --------------- Feature gates ---------------
+
+config HYPERWISOR_ENABLE_SYSTEM
+    bool "System commands (restart, status)"
+    default y
+    help
+      Register the built-in SYSTEM command handler (restart, uptime,
+      device info). This is nearly free in code size and is recommended
+      for all deployments.
+
+config HYPERWISOR_ENABLE_NTP
+    bool "NTP time sync"
+    default y
+    help
+      Sync the device clock via SNTP after WiFi connects. Required
+      for accurate timestamps in logs and cloud events.
+
+config HYPERWISOR_ENABLE_HTTP
+    bool "HTTP helper"
+    default y
+    help
+      Expose hyperwisor_http_get/post helpers. Used by the widget
+      module and useful for application-level HTTP calls.
+
+config HYPERWISOR_ENABLE_WIDGET
+    bool "Dashboard widget updates"
+    default y
+    help
+      Enable the widget API (update_widget_string, show_dialog, etc.)
+      so the device can push live data to the Hyperwisor dashboard.
+
+config HYPERWISOR_ENABLE_OTA
+    bool "Over-the-air firmware updates"
+    default n
+    select ESP_HTTPS_OTA
+    select BOOTLOADER_APP_ROLLBACK
+    help
+      When enabled, the library registers an OTA_UPDATE command
+      handler. The Hyperwisor dashboard can push firmware updates
+      automatically — zero user code required.
+
+      You MUST also switch to an OTA partition table. Copy the
+      correct partitions_XXmb_ota.csv from the hyperwisor component's
+      partitions/ directory and add to sdkconfig.defaults:
+
+        CONFIG_PARTITION_TABLE_CUSTOM=y
+        CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_16mb_ota.csv"
+
+      The build system will validate this at compile time and print a
+      clear error if the partition table is missing OTA slots.
+
+config HYPERWISOR_ENABLE_GPIO
+    bool "GPIO management from cloud"
+    default n
+    help
+      Allow the Hyperwisor dashboard to read/write GPIO pins.
+      Only pins listed in the board port's managed_gpios array are
+      accessible — all others are silently rejected for safety.
+
+      If no board port is provided (headless deployment), GPIO
+      management is effectively disabled even if this option is on.
+
+config HYPERWISOR_ENABLE_DISPLAY
+    bool "Display brightness control"
+    default n
+    depends on LV_CONF_INCLUDE_SIMPLE
+    help
+      Enable software dimming of the display backlight via an LVGL
+      overlay. The board port must provide backlight_set and
+      backlight_set_level callbacks. If no board port is provided
+      or the callbacks are NULL, this feature is inert.
+
+endmenu

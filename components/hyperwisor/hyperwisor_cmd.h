@@ -13,7 +13,11 @@
 extern "C" {
 #endif
 
+#ifdef CONFIG_HYPERWISOR_CMD_MAX_HANDLERS
+#define HYPERWISOR_CMD_MAX_HANDLERS CONFIG_HYPERWISOR_CMD_MAX_HANDLERS
+#else
 #define HYPERWISOR_CMD_MAX_HANDLERS 16
+#endif
 
 esp_err_t hyperwisor_cmd_process(const char *json_str);
 cJSON *hyperwisor_cmd_build_response(const char *from, cJSON *payload);
