@@ -61,7 +61,12 @@ esp_err_t modbus_client_init(uint32_t baud)
                        UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     if (err != ESP_OK) { ESP_LOGE(TAG, "uart_set_pin: %s", esp_err_to_name(err)); return err; }
 
-    /* Transceiver handles DE/RE automatically; plain UART mode is fine. */
+    /* SP3485 has auto-direction (RC on DI). We do NOT call
+     * uart_set_mode(RS485_HALF_DUPLEX) because that mode drives RTS for
+     * DE control and discards bytes received during TX -- on this board
+     * RTS isn't wired to DE (the RC handles it), and the discard logic
+     * was silencing legitimate replies. Self-echo from the bus is
+     * skipped explicitly in txn() below. */
     s_inited = true;
     ESP_LOGI(TAG, "master started, UART%d %u 8N1 on TX=%d RX=%d (auto-DE)",
              BSP_RS485_UART_NUM, (unsigned)baud,
@@ -88,6 +93,13 @@ static esp_err_t txn(const uint8_t *tx, size_t tx_len,
     /* Make sure the stop bit of the last byte has left the shifter before
      * the transceiver flips back to receive. */
     uart_wait_tx_done(BSP_RS485_UART_NUM, pdMS_TO_TICKS(MB_TX_TIMEOUT_MS));
+
+    /* NOTE: do NOT eat tx_len bytes here as "self-echo". The Waveshare
+     * SP3485 has its receiver gated off while DE is asserted, so the bus
+     * does NOT loop our own TX back into the UART RX FIFO. Any bytes
+     * arriving after our wait_tx_done are the slave's reply -- discarding
+     * tx_len of them would consume an entire 8-byte FC05 echo response,
+     * which is exactly the "TX works but 0 bytes back" symptom we hit. */
 
     size_t got = 0;
     TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(MB_RESP_TIMEOUT_MS);

@@ -80,21 +80,26 @@
 #define BSP_TOUCH_RST              (-1)   /* RESET is via CH422G, not a GPIO */
 #define BSP_TOUCH_RESET_IO4        4      /* GPIO used during reset-time addr selection */
 
-/* ---- Onboard RS-485 (auto direction via MAX13487-class transceiver) ----
- * NOTE: requires board switch #15 to be in the UART2 position, otherwise
- * GPIO15/16 are captured by the CH340 USB-UART bridge. With switch in
- * UART2 position, the CH340 Type-C port is offline and flashing must be
- * done via the native USB-JTAG-SERIAL Type-C port (GPIO19/20 internal).
- * Pin map from Waveshare ESP32-S3-Touch-LCD-7 wiki, RS485 Interface. */
+/* ---- Onboard RS-485 (auto direction via SP3485 transceiver) ----
+ * Waveshare ESP32-S3-Touch-LCD-7 PCB routing (verified against schematic):
+ *   GPIO16 → SP3485 DI  (Driver Input  = data FROM ESP32 to bus) → UART TX
+ *   GPIO15 → SP3485 RO  (Receiver Out  = data FROM bus  to ESP32) → UART RX
+ *
+ * The board silkscreen labels are from the *relay/device* perspective:
+ *   "RS485_RXD" on GPIO16 means the relay's RX  → actually the ESP32's TX
+ *   "RS485_TXD" on GPIO15 means the relay's TX  → actually the ESP32's RX
+ * Using TX=15 / RX=16 drives the SP3485 RO (a chip output) from UART TX and
+ * listens on DI (a chip input) via UART RX — both backwards, causing 0 bytes
+ * received even though the relay visibly responds (TXD LED blinks).
+ *
+ * DE/RE auto-direction: the SP3485EN DE/RE is driven by an RC circuit on DI
+ * (GPIO16). No additional GPIO needed for direction control.
+ */
 #define BSP_RS485_UART_NUM         1       /* UART1 peripheral */
-/* WAVESHARE QUIRK: silkscreen labels GPIO15=TX/16=RX are misleading on this
- * board. The onboard auto-direction circuit only triggers when the ESP32-S3
- * UART TX is bound to GPIO16 (NOT 15). Verified empirically with the bare
- * modbus_test sketch: with TX=15/RX=16 we got 0 bytes; with TX=16/RX=15 the
- * relay board replied on the first frame. Do NOT swap these back. */
-#define BSP_RS485_IO_TX            16      /* RS485 TX (drives auto-DE circuit) */
-#define BSP_RS485_IO_RX            15      /* RS485 RX */
-/* Factory-safe default baud. Matches unconfigured Waveshare relay board.
- * Effective runtime baud is NVS-backed via bus_config; user upgrades to
- * 115200 from Maintenance → Bus Setup on the HMI itself (no external tools). */
-#define BSP_RS485_DEFAULT_BAUD     9600
+#define BSP_RS485_IO_TX            16      /* SP3485 DI  — data out from ESP32 */
+#define BSP_RS485_IO_RX            15      /* SP3485 RO  — data in to ESP32    */
+/* Default baud matches Waveshare Modbus RTU Relay 16CH after user configuration.
+ * NVS overrides this at runtime (Maintenance → Bus Setup). If NVS was previously
+ * saved at 9600 and the relay board is now at 115200, use the HMI to set 115200
+ * or erase NVS with: idf.py -p COMx erase-flash  then reflash. */
+#define BSP_RS485_DEFAULT_BAUD     9600   /* relay now reconfigured to 9600 */

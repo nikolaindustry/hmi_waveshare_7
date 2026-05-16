@@ -18,6 +18,11 @@ static const char *TAG = "modbus_task";
 #define MB_SEC_POLL_MS      100   /* how often primary reads secondary's intent ring */
 #define MB_MIRROR_PUSH_MS   500   /* how often primary pushes mirror to secondary    */
 #define MB_SEC_OFFLINE_THR  3     /* consecutive failures -> mark secondary offline  */
+/* When the secondary HMI is unreachable, back off both its poll and its
+ * mirror push to this slow rate. Otherwise we flood the bus with frames
+ * addressed to a non-existent slave (FC03 every 100ms + FC10 137-byte
+ * mirror every 500ms) which collides with the relay's reply window. */
+#define MB_SEC_BACKOFF_MS   10000
 #define MB_QUEUE_LEN        16
 #define MB_WRITE_RETRIES    2
 #define MB_OFFLINE_THRESH   3      /* consecutive poll failures before OFFLINE */
@@ -466,14 +471,23 @@ probe_done:
 
         /* Dual-HMI: probe secondary's intent ring often (user-taps latency)
          * and push the mirror less often (secondary just needs periodic
-         * state sync; its UI redraw is driven by the mirror_seq counter). */
+         * state sync; its UI redraw is driven by the mirror_seq counter).
+         *
+         * If the secondary is currently flagged offline (after
+         * MB_SEC_OFFLINE_THR consecutive failures), throttle both
+         * transactions to MB_SEC_BACKOFF_MS to keep the bus clear for the
+         * relay. Each FC10 push is ~140 ms of bus time at 9600 baud and
+         * was stomping on the relay's reply window. */
+        bool sec_online = hmi_sync_secondary_online();
+        uint32_t sec_poll_period   = sec_online ? MB_SEC_POLL_MS   : MB_SEC_BACKOFF_MS;
+        uint32_t sec_mirror_period = sec_online ? MB_MIRROR_PUSH_MS : MB_SEC_BACKOFF_MS;
         if ((int32_t)(xTaskGetTickCount() - next_sec_poll) >= 0) {
             poll_secondary_intents();
-            next_sec_poll = xTaskGetTickCount() + pdMS_TO_TICKS(MB_SEC_POLL_MS);
+            next_sec_poll = xTaskGetTickCount() + pdMS_TO_TICKS(sec_poll_period);
         }
         if ((int32_t)(xTaskGetTickCount() - next_mirror) >= 0) {
             push_mirror_to_secondary();
-            next_mirror = xTaskGetTickCount() + pdMS_TO_TICKS(MB_MIRROR_PUSH_MS);
+            next_mirror = xTaskGetTickCount() + pdMS_TO_TICKS(sec_mirror_period);
         }
     }
 }
