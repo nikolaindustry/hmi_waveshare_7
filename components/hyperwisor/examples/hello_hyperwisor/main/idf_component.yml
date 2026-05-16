@@ -1,0 +1,7 @@
+## Pull in the local Hyperwisor component during development.
+## When published, replace with: nikolaindustry/hyperwisor: "^0.1.0"
+
+dependencies:
+  idf: ">=5.5,<7.0"
+  hyperwisor:
+    path: ../../../

@@ -7,6 +7,7 @@ set(_srcs
     "hyperwisor_http.c"
     "hyperwisor_ntp.c"
     "hyperwisor_widget.c"
+    "hyperwisor_port.c"
 )
 
 # --- Feature-gated source files ---
@@ -33,16 +34,15 @@ set(_requires
     esp_http_server
     esp_timer
     espressif__cjson
+    esp_https_ota
+    app_update
+    driver
 )
 
 set(_priv_requires
     esp_websocket_client
     esp-tls
 )
-
-if(CONFIG_HYPERWISOR_ENABLE_OTA)
-    list(APPEND _priv_requires esp_https_ota esp_ota)
-endif()
 
 # --- Build-time partition table validation for OTA ---
 # If OTA is enabled but the partition table has no ota_0/ota_1 slots,

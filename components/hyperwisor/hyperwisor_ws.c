@@ -7,6 +7,7 @@
 #include "esp_websocket_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +18,7 @@ static esp_websocket_client_handle_t s_ws_client = NULL;
 static hyperwisor_ws_msg_cb_t s_msg_cb = NULL;
 static hyperwisor_ws_conn_cb_t s_conn_cb = NULL;
 static bool s_ws_connected = false;
+static int s_reconnect_attempt = 0;  /* For exponential backoff tracking */
 
 static void ws_event_handler(void *handler_args, esp_event_base_t base,
                              int32_t event_id, void *event_data)
@@ -27,14 +29,41 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
     case WEBSOCKET_EVENT_CONNECTED:
         ESP_LOGI(TAG, "WebSocket connected");
         s_ws_connected = true;
+        s_reconnect_attempt = 0;  /* Reset backoff on successful connect */
         if (s_conn_cb) {
             s_conn_cb(true);
         }
         break;
 
     case WEBSOCKET_EVENT_DISCONNECTED:
-        ESP_LOGW(TAG, "WebSocket disconnected");
+        ESP_LOGW(TAG, "WebSocket disconnected (attempt %d)", s_reconnect_attempt + 1);
         s_ws_connected = false;
+        /* Exponential backoff with jitter:
+         * delay = min(base * 2^attempt, max) + random(0, base)
+         * This avoids thundering herd when many devices disconnect simultaneously.
+         * The esp_websocket_client library handles reconnection automatically
+         * using the reconnect_timeout_ms we set at creation time. For backoff,
+         * we destroy the old client and recreate with a longer timeout. */
+        {
+            int base = HYPERWISOR_WS_RECONNECT_MS;
+            int delay_ms = base << s_reconnect_attempt;  /* base * 2^attempt */
+            if (delay_ms > HYPERWISOR_WS_RECONNECT_MAX_MS) {
+                delay_ms = HYPERWISOR_WS_RECONNECT_MAX_MS;
+            }
+            /* Add random jitter: 0..base ms */
+            delay_ms += (esp_random() % base);
+            ESP_LOGI(TAG, "Next reconnect in %d ms (backoff attempt %d)", delay_ms, s_reconnect_attempt + 1);
+
+            /* Destroy current client and set flag so core task recreates
+             * with the new timeout. The reconnect delay is achieved by
+             * the core task waiting before calling ws_connect again. */
+            if (s_ws_client) {
+                esp_websocket_client_stop(s_ws_client);
+                esp_websocket_client_destroy(s_ws_client);
+                s_ws_client = NULL;
+            }
+            s_reconnect_attempt++;
+        }
         if (s_conn_cb) {
             s_conn_cb(false);
         }

@@ -15,12 +15,17 @@
 #include "bus_config.h"
 #include "hyperwisor.h"
 #include "hyperwisor_app.h"
+#include "board_s3.h"
 #include "display_brightness.h"
 
 static const char *TAG = "main";
 
 void app_main(void)
 {
+    /* Temporary: show Modbus TX/RX for pin-swap diagnosis */
+    esp_log_level_set("modbus",      ESP_LOG_INFO);
+    esp_log_level_set("modbus_task", ESP_LOG_INFO);
+
     ESP_LOGI(TAG, "Hyperwisor S3 booting");
 
     /* 1) NVS must be initialised BEFORE the RGB LCD panel starts.
@@ -102,9 +107,11 @@ void app_main(void)
         /* 3c) Hyperwisor IoT cloud: native WiFi STA/AP + websocket client.
          *     Only the PRIMARY pushes state to the cloud; the SECONDARY is
          *     headless logic-wise and has no independent view of the bus.
-         *     Order matters: core first (creates NVS keys + WiFi netif),
-         *     then app layer registers command handlers + loads widget
+         *     Order matters: port first (tells library about the board),
+         *     then core init (reads port for GPIO allowlist etc.), then
+         *     app layer registers command handlers + loads widget
          *     bindings, then start kicks off the state machine. */
+        hyperwisor_set_port(&board_port_s3);
         if (hyperwisor_init() == ESP_OK) {
             hyperwisor_app_init();
             hyperwisor_start();

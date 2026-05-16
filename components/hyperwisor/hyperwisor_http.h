@@ -8,12 +8,15 @@
 
 #include "esp_err.h"
 #include "cJSON.h"
+#include "sdkconfig.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define HYPERWISOR_HTTP_BASE_URL     "https://cgsuxlbravclbbpnvfky.supabase.co/functions/v1"
+/* Configurable via Kconfig → HYPERWISOR_HTTP_BASE_URL.
+ * Defaults to https://hyperwisor.nikolaindustry.workers.dev/functions/v1 */
+#define HYPERWISOR_HTTP_BASE_URL     CONFIG_HYPERWISOR_HTTP_BASE_URL
 #define HYPERWISOR_HTTP_TIMEOUT_MS   10000
 
 esp_err_t hyperwisor_db_insert(const char *product_id, const char *device_id, const char *table_name,

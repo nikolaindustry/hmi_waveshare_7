@@ -1,0 +1,17 @@
+## Build artefacts
+build/
+managed_components/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+
+## Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+## ESP-IDF component packing artefacts
+dist/
+*.tgz
+.component_hash

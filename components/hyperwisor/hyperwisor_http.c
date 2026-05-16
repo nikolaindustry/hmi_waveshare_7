@@ -10,7 +10,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-static const char *TAG = "HYPER_HTTP";
+static const char *TAG __attribute__((unused)) = "HYPER_HTTP";
 
 /* Helper: perform HTTP request and return response as cJSON */
 static cJSON *http_request(const char *method, const char *url,

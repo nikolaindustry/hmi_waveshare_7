@@ -57,6 +57,13 @@ esp_err_t hyperwisor_start(void);
 
 hyperwisor_state_t *hyperwisor_get_state(void);
 
+/** @brief Acquire the state mutex before reading/writing shared state.
+ *  Use in contexts where multiple threads access hyperwisor_get_state(). */
+void hyperwisor_state_lock(void);
+
+/** @brief Release the state mutex after accessing shared state. */
+void hyperwisor_state_unlock(void);
+
 esp_err_t hyperwisor_register_cmd_handler(const char *command, hyperwisor_cmd_handler_t handler);
 void      hyperwisor_register_user_msg_cb(hyperwisor_user_msg_cb_t cb);
 

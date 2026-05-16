@@ -10,7 +10,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-static const char *TAG = "HYPER_WIDGET";
+static const char *TAG __attribute__((unused)) = "HYPER_WIDGET";
 
 /* Helper: build envelope {targetId, payload: {...}} and send */
 static esp_err_t send_payload(const char *target_id, cJSON *payload)

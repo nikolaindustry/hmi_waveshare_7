@@ -14,7 +14,7 @@ Write-Host "BuildExit=$bc"
 if ($bc -ne 0) { Write-Host "BUILD FAILED"; Get-Content build.log -Tail 40; exit 1 }
 
 Write-Host "`n=== FLASH ==="
-python -m esptool --chip esp32s3 -p COM4 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 build/bootloader/bootloader.bin 0x8000 build/partition_table/partition-table.bin 0x10000 build/hyperwisor_s3.bin *> flash.log
+python -m esptool --chip esp32s3 -p COM4 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 build/bootloader/bootloader.bin 0x8000 build/partition_table/partition-table.bin 0x20000 build/hyperwisor_s3.bin *> flash.log
 $fc = $LASTEXITCODE
 Get-Content flash.log | Select-Object -Last 6
 Write-Host "FlashExit=$fc"

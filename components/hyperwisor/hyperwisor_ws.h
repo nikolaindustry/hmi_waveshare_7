@@ -14,7 +14,8 @@
 extern "C" {
 #endif
 
-#define HYPERWISOR_WS_RECONNECT_MS     5000
+#define HYPERWISOR_WS_RECONNECT_MS     5000   /* Initial reconnect delay */
+#define HYPERWISOR_WS_RECONNECT_MAX_MS 60000  /* Max reconnect delay (cap) */
 #define HYPERWISOR_WS_PING_INTERVAL_MS 15000
 #define HYPERWISOR_WS_PONG_TIMEOUT_MS  3000
 #define HYPERWISOR_WS_PONG_FAIL_COUNT  2

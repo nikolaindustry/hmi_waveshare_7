@@ -11,6 +11,14 @@ config HYPERWISOR_CMD_MAX_HANDLERS
       registered via hyperwisor_register_cmd_handler(). Each handler
       consumes a small fixed slot. 16 is enough for most projects.
 
+config HYPERWISOR_HTTP_BASE_URL
+    string "HTTP API base URL"
+    default "https://hyperwisor.nikolaindustry.workers.dev/functions/v1"
+    help
+      Base URL for the Hyperwisor HTTP API (database, SMS, auth,
+      onboarding). All API paths are appended to this URL.
+      Change this if you are self-hosting the backend.
+
 config HYPERWISOR_WS_HOST
     string "WebSocket server hostname"
     default "nikolaindustry-realtime.onrender.com"
@@ -74,6 +82,10 @@ config HYPERWISOR_ENABLE_OTA
       The build system will validate this at compile time and print a
       clear error if the partition table is missing OTA slots.
 
+      WARNING: Without Secure Boot V2, OTA firmware is NOT verified.
+      Anyone who can send an OTA command can push arbitrary firmware.
+      Enable Secure Boot V2 for production deployments.
+
 config HYPERWISOR_ENABLE_GPIO
     bool "GPIO management from cloud"
     default n
@@ -88,11 +100,14 @@ config HYPERWISOR_ENABLE_GPIO
 config HYPERWISOR_ENABLE_DISPLAY
     bool "Display brightness control"
     default n
-    depends on LV_CONF_INCLUDE_SIMPLE
     help
-      Enable software dimming of the display backlight via an LVGL
-      overlay. The board port must provide backlight_set and
-      backlight_set_level callbacks. If no board port is provided
-      or the callbacks are NULL, this feature is inert.
+      Enable display backlight control via the board port callbacks
+      (backlight_set, backlight_set_level, backlight_get_level).
+      The library itself is UI-framework-agnostic — it only calls
+      the port function pointers. The app layer provides the actual
+      implementation (e.g. LVGL overlay, LEDC PWM, or I2C command).
+
+      If no board port is provided or the callbacks are NULL, this
+      feature is inert.
 
 endmenu

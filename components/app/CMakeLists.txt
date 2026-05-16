@@ -30,6 +30,7 @@ idf_component_register(
         "hmi_sync/hmi_sync.c"
         "bus_config/bus_config.c"
         "cloud/hyperwisor_app.c"
+        "cloud/board_s3.c"
     INCLUDE_DIRS
         "include"
         "ui"

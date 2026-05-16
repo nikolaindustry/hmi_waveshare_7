@@ -2,8 +2,8 @@
 
 /* Umbrella header for the Hyperwisor IoT component.
  * Downstream code should `#include "hyperwisor.h"` and pull everything
- * (core, wifi, ws, commands, nvs, widget, ntp, http) in one shot.
- * Optional features (OTA, GPIO) are included when their Kconfig is on.
+ * (core, wifi, ws, commands, nvs, widget, ntp, http, port) in one shot.
+ * Optional features (OTA, GPIO, Display) are included when their Kconfig is on.
  */
 
 #include "hyperwisor_core.h"
@@ -14,7 +14,12 @@
 #include "hyperwisor_widget.h"
 #include "hyperwisor_ntp.h"
 #include "hyperwisor_http.h"
+#include "hyperwisor_port.h"
 
 #if CONFIG_HYPERWISOR_ENABLE_OTA
 #include "hyperwisor_ota.h"
+#endif
+
+#if CONFIG_HYPERWISOR_ENABLE_GPIO
+#include "hyperwisor_gpio.h"
 #endif

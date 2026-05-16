@@ -18,6 +18,7 @@
 #define HYPERWISOR_OTA_H
 
 #include "esp_err.h"
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,13 +51,32 @@ void hyperwisor_ota_get_version(char *out_buf, size_t buf_len);
 esp_err_t hyperwisor_ota_verify_signature(void);
 
 /**
+ * @brief Auto-register OTA command handlers (OTA + OTA_UPDATE)
+ *
+ * Called by hyperwisor_core when CONFIG_HYPERWISOR_ENABLE_OTA is set.
+ */
+void hyperwisor_ota_auto_register(void);
+
+/**
+ * @brief Returns true if an OTA download is in progress.
+ *
+ * Used by hyperwisor_core to suppress WebSocket reconnect attempts
+ * while the OTA HTTPS download is running (so the WS client doesn't
+ * fight for TLS/TCP resources with the download).
+ */
+bool hyperwisor_ota_is_in_progress(void);
+
+/**
  * @brief Check if running app is marked valid (cancel rollback)
  *
  * Call this once at startup after hyperwisor_init(). If the app
  * was updated via OTA and is running fine, this marks it as valid
  * so the bootloader won't roll back on the next reboot.
+ *
+ * @return true if an OTA update was just confirmed (caller should
+ *         notify the cloud once WebSocket is connected), false otherwise
  */
-void hyperwisor_ota_confirm_good_boot(void);
+bool hyperwisor_ota_confirm_good_boot(void);
 
 #ifdef __cplusplus
 }
