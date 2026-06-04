@@ -80,6 +80,11 @@ uint32_t hmi_sync_mirror_seq(void);
  * never). Used to drive the link-online indicator on the secondary. */
 uint32_t hmi_sync_mirror_age_ms(void);
 
+/* True if the most recent mirror push reported the primary's link to
+ * the relay board as online. Use together with mirror_age_ms to derive
+ * end-to-end reachability on the secondary's link pill. */
+bool hmi_sync_remote_relay_online(void);
+
 /* ---- PRIMARY SIDE ---------------------------------------------------- */
 
 /* Encode current local state into a mirror block. */

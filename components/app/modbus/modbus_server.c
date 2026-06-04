@@ -101,8 +101,12 @@ static void handle_read_hregs(const uint8_t *req, size_t req_len)
         send_exception(0x03, MBS_EXC_ILLEGAL_VALUE);
         return;
     }
-    if (start != HMI_INTENT_BASE ||
-        (uint32_t)start + count > (uint32_t)HMI_INTENT_BASE + HMI_INTENT_RING_REGS) {
+    /* Accept any window inside the intent ring -- the primary issues a
+     * 2-reg head probe at 0x0000 AND a 32-reg slot read at 0x0002, so
+     * requiring start == HMI_INTENT_BASE silently dropped the slot read
+     * and intents from the secondary never got dispatched.
+     * (HMI_INTENT_BASE is 0, so only the upper-bound check is meaningful.) */
+    if ((uint32_t)start + count > (uint32_t)HMI_INTENT_BASE + HMI_INTENT_RING_REGS) {
         send_exception(0x03, MBS_EXC_ILLEGAL_ADDR);
         return;
     }

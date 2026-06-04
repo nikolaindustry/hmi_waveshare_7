@@ -20,6 +20,7 @@ static const char *TAG = "hmi_sync";
 #define M_LINK_SEQ        0x00
 #define M_RELAY_BITS      0x01
 #define M_RELAY_PENDING   0x02
+#define M_RELAY_LINK      0x03   /* 1 = primary can reach the relay board */
 
 #define M_RGB_ROOF        0x10   /* 4 regs: on, hue, sat, brightness */
 #define M_RGB_FLOOR       0x14   /* 4 regs: on, hue, sat, brightness */
@@ -43,6 +44,7 @@ static uint8_t  s_ring_write_idx;          /* next slot to overwrite (LRU)   */
 static uint32_t s_mirror_seq;              /* bumped on each successful apply */
 static int64_t  s_mirror_last_us = -1;     /* -1 = never seen                 */
 static uint16_t s_local_link_seq;          /* copy of what primary sent       */
+static bool     s_remote_relay_online;     /* primary's view of relay, mirrored */
 
 /* ---- PRIMARY ring-poll state ---- */
 static uint16_t s_primary_last_seq;
@@ -230,6 +232,10 @@ void hmi_sync_encode_mirror(uint16_t out[HMI_MIRROR_REGS])
     }
     out[M_RELAY_BITS]    = relay;
     out[M_RELAY_PENDING] = pending;
+    /* Primary's view of the relay-board link, so the secondary's pill
+     * can reflect end-to-end reachability rather than just "primary is
+     * pushing mirrors." */
+    out[M_RELAY_LINK]    = modbus_task_link_online() ? 1u : 0u;
 
     /* RGB zones. */
     ctrl_rgb_t *roof  = ctrl_rgb_roof();
@@ -278,6 +284,7 @@ void hmi_sync_write_mirror(const uint16_t in[HMI_MIRROR_REGS])
     portENTER_CRITICAL(&s_mir_lock);
     s_mirror_seq++;
     s_mirror_last_us = esp_timer_get_time();
+    s_remote_relay_online = in[M_RELAY_LINK] != 0;
     portEXIT_CRITICAL(&s_mir_lock);
 
     /* relay bits -> reading lights / switches on fields */
@@ -337,6 +344,8 @@ void hmi_sync_write_mirror(const uint16_t in[HMI_MIRROR_REGS])
 }
 
 bool hmi_sync_mirror_seen(void) { return s_mirror_last_us >= 0; }
+
+bool hmi_sync_remote_relay_online(void) { return s_remote_relay_online; }
 
 uint32_t hmi_sync_mirror_seq(void) { return s_mirror_seq; }
 

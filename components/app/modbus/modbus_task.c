@@ -67,8 +67,45 @@ static TaskHandle_t   s_task_handle  = NULL;
 static volatile bool  s_pause_req    = false;
 static volatile bool  s_paused_ack   = false;
 
-bool modbus_task_link_online(void) { return s_link_online; }
-uint32_t modbus_task_state_seq(void) { return s_seq; }
+bool modbus_task_link_online(void)
+{
+    /* On the PRIMARY the worker task maintains s_link_online based on
+     * relay poll/write success. On the SECONDARY the worker never runs --
+     * the secondary is purely a Modbus slave (slave 0x10) answering to
+     * the primary. Drive the link pill from "did we get a mirror push
+     * from the primary recently?" instead: hmi_sync_mirror_seq() is
+     * bumped on every successful FC10 write from the primary. */
+    if (hmi_role_get() == HMI_ROLE_SECONDARY) {
+        static uint32_t  last_seen_seq  = 0;
+        static TickType_t last_seen_tick = 0;
+        uint32_t  seq = hmi_sync_mirror_seq();
+        TickType_t now = xTaskGetTickCount();
+        if (seq != last_seen_seq) {
+            last_seen_seq  = seq;
+            last_seen_tick = now;
+        }
+        /* Primary pushes mirror every 500 ms; allow 2.5 s before flipping
+         * the pill to offline so a single dropped push doesn't flicker it.
+         * AND with the remote relay-link bit so the pill reflects end-to-end
+         * reachability, not just "primary is alive." */
+        if (last_seen_tick == 0) return false;   /* nothing ever received */
+        bool mirror_fresh = (uint32_t)(now - last_seen_tick) < pdMS_TO_TICKS(2500);
+        return mirror_fresh && hmi_sync_remote_relay_online();
+    }
+    return s_link_online;
+}
+uint32_t modbus_task_state_seq(void)
+{
+    /* Combine local state changes with received-mirror changes so the
+     * UI repaint timer fires for both. Without this, the secondary's UI
+     * was lagging by one tap: ctrl_state arrays were being updated by
+     * hmi_sync_write_mirror() (which bumps mirror_seq) but s_seq never
+     * moved, so the LVGL sync callback never noticed there was new state
+     * to paint until the user's next local tap bumped s_seq again.
+     * On the primary, mirror_seq stays 0 (mirror is encoded, never
+     * applied locally), so this addition is a no-op there. */
+    return s_seq + hmi_sync_mirror_seq();
+}
 
 esp_err_t modbus_task_pause(uint32_t timeout_ms)
 {
@@ -108,12 +145,20 @@ void modbus_task_request(uint16_t coil, bool on)
 {
     /* Secondary HMI has no bus access: reroute coil taps as intents.
      * The primary will dispatch them through its own queue and the
-     * confirmation flows back via the state mirror. */
+     * confirmation flows back via the state mirror.
+     *
+     * Optimistic UI: paint the new state immediately so the tile flips
+     * the instant the user taps, instead of waiting for the next mirror
+     * push (~100-500 ms away). pending=true so the tile shows its
+     * in-flight border until the mirror confirms (or corrects) it. */
     if (hmi_role_get() == HMI_ROLE_SECONDARY) {
         hmi_sync_push_intent(HMI_CMD_COIL_SET, coil, on ? 1 : 0, 0);
-        /* Don't leave tiles in pending: the mirror drives paint on secondary. */
         ctrl_toggle_t *t = find_by_coil(coil);
-        if (t) { t->pending = false; s_seq++; }
+        if (t) {
+            t->on      = on;
+            t->pending = true;
+            s_seq++;
+        }
         return;
     }
 
@@ -482,8 +527,17 @@ probe_done:
         uint32_t sec_poll_period   = sec_online ? MB_SEC_POLL_MS   : MB_SEC_BACKOFF_MS;
         uint32_t sec_mirror_period = sec_online ? MB_MIRROR_PUSH_MS : MB_SEC_BACKOFF_MS;
         if ((int32_t)(xTaskGetTickCount() - next_sec_poll) >= 0) {
+            uint16_t prev_seq = hmi_sync_primary_last_seq();
             poll_secondary_intents();
             next_sec_poll = xTaskGetTickCount() + pdMS_TO_TICKS(sec_poll_period);
+            /* If new intents were applied (last_seq advanced), force the
+             * next mirror push to fire on the very next loop iteration
+             * so the secondary's UI confirms within ~100 ms instead of
+             * waiting up to MB_MIRROR_PUSH_MS for the next scheduled
+             * push. */
+            if (hmi_sync_primary_last_seq() != prev_seq) {
+                next_mirror = xTaskGetTickCount();
+            }
         }
         if ((int32_t)(xTaskGetTickCount() - next_mirror) >= 0) {
             push_mirror_to_secondary();
