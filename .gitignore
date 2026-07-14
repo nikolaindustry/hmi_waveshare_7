@@ -27,3 +27,6 @@ serial_log.ps1
 # Python cache
 __pycache__/
 *.pyc
+
+# ESP-IDF Installation Manager (eim) local config — machine-specific paths
+eim_config.toml

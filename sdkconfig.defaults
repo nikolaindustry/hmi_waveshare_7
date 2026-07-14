@@ -76,6 +76,9 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
 # ---- Hyperwisor IoT ----
+# Secured realtime relay (HSC v1 enforce mode). Was the legacy
+# nikolaindustry-realtime.onrender.com before the security update.
+CONFIG_HYPERWISOR_WS_HOST="hyperwisor-realtime-secure.onrender.com"
 CONFIG_HYPERWISOR_ENABLE_SYSTEM=y
 CONFIG_HYPERWISOR_ENABLE_NTP=y
 CONFIG_HYPERWISOR_ENABLE_HTTP=y

@@ -15,6 +15,7 @@
 #include "hyperwisor_ntp.h"
 #include "hyperwisor_http.h"
 #include "hyperwisor_port.h"
+#include "hyperwisor_hsc.h"
 
 #if CONFIG_HYPERWISOR_ENABLE_OTA
 #include "hyperwisor_ota.h"

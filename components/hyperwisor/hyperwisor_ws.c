@@ -20,6 +20,67 @@ static hyperwisor_ws_conn_cb_t s_conn_cb = NULL;
 static bool s_ws_connected = false;
 static int s_reconnect_attempt = 0;  /* For exponential backoff tracking */
 
+/* HSC v1 handshake state */
+static bool s_hsc_enabled = false;
+static bool s_authenticated = false;
+static hyperwisor_ws_signer_cb_t s_signer = NULL;
+static char s_device_id[64] = {0};
+
+void hyperwisor_ws_enable_hsc(hyperwisor_ws_signer_cb_t signer, const char *device_id)
+{
+    s_signer = signer;
+    if (device_id) {
+        strncpy(s_device_id, device_id, sizeof(s_device_id) - 1);
+        s_device_id[sizeof(s_device_id) - 1] = '\0';
+    }
+    s_hsc_enabled = true;
+    ESP_LOGI(TAG, "HSC: handshake enabled");
+}
+
+/* Handle an HSC control frame (challenge / auth_ok / auth_fail). */
+static void hsc_handle_data(const char *data, int len)
+{
+    cJSON *root = cJSON_ParseWithLength(data, len);
+    if (!root) return;
+    const cJSON *type = cJSON_GetObjectItem(root, "type");
+    const char *t = cJSON_IsString(type) ? type->valuestring : "";
+
+    if (strcmp(t, "challenge") == 0) {
+        const cJSON *jn = cJSON_GetObjectItem(root, "nonce");
+        const cJSON *jt = cJSON_GetObjectItem(root, "ts");
+        const char *nonce = cJSON_IsString(jn) ? jn->valuestring : "";
+        char ts[24] = {0};
+        if (cJSON_IsNumber(jt)) {
+            /* ts is a JS millisecond integer; double holds it exactly (<2^53). */
+            snprintf(ts, sizeof(ts), "%.0f", jt->valuedouble);
+        } else if (cJSON_IsString(jt)) {
+            strncpy(ts, jt->valuestring, sizeof(ts) - 1);
+        }
+        char sig[128] = {0};
+        if (s_signer && s_signer(nonce, ts, sig, sizeof(sig)) == ESP_OK) {
+            cJSON *out = cJSON_CreateObject();
+            cJSON_AddStringToObject(out, "hsc", "1");
+            cJSON_AddStringToObject(out, "type", "auth");
+            cJSON_AddStringToObject(out, "deviceId", s_device_id);
+            cJSON_AddStringToObject(out, "sig", sig);
+            hyperwisor_ws_send_json(out);
+            cJSON_Delete(out);
+            ESP_LOGI(TAG, "HSC: signed challenge -> sent auth");
+        } else {
+            ESP_LOGE(TAG, "HSC: signing failed");
+        }
+    } else if (strcmp(t, "auth_ok") == 0) {
+        s_authenticated = true;
+        ESP_LOGI(TAG, "HSC: authenticated");
+        if (s_conn_cb) s_conn_cb(true);
+    } else if (strcmp(t, "auth_fail") == 0) {
+        const cJSON *reason = cJSON_GetObjectItem(root, "reason");
+        ESP_LOGE(TAG, "HSC: auth rejected: %s",
+                 cJSON_IsString(reason) ? reason->valuestring : "unknown");
+    }
+    cJSON_Delete(root);
+}
+
 static void ws_event_handler(void *handler_args, esp_event_base_t base,
                              int32_t event_id, void *event_data)
 {
@@ -29,8 +90,12 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
     case WEBSOCKET_EVENT_CONNECTED:
         ESP_LOGI(TAG, "WebSocket connected");
         s_ws_connected = true;
+        s_authenticated = false;
         s_reconnect_attempt = 0;  /* Reset backoff on successful connect */
-        if (s_conn_cb) {
+        if (s_hsc_enabled) {
+            /* Wait for the HSC challenge -> auth_ok before reporting connected. */
+            ESP_LOGI(TAG, "HSC: awaiting challenge...");
+        } else if (s_conn_cb) {
             s_conn_cb(true);
         }
         break;
@@ -38,6 +103,7 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "WebSocket disconnected (attempt %d)", s_reconnect_attempt + 1);
         s_ws_connected = false;
+        s_authenticated = false;
         /* Exponential backoff with jitter:
          * delay = min(base * 2^attempt, max) + random(0, base)
          * This avoids thundering herd when many devices disconnect simultaneously.
@@ -70,8 +136,13 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
         break;
 
     case WEBSOCKET_EVENT_DATA:
-        if (data->op_code == WS_TRANSPORT_OPCODES_TEXT && s_msg_cb) {
-            s_msg_cb(data->data_ptr, data->data_len);
+        if (data->op_code == WS_TRANSPORT_OPCODES_TEXT) {
+            if (s_hsc_enabled && !s_authenticated) {
+                /* Before auth: only handshake frames are processed; drop the rest. */
+                hsc_handle_data(data->data_ptr, data->data_len);
+            } else if (s_msg_cb) {
+                s_msg_cb(data->data_ptr, data->data_len);
+            }
         }
         break;
 
@@ -201,6 +272,8 @@ esp_err_t hyperwisor_ws_send_json(cJSON *json)
 
 bool hyperwisor_ws_is_connected(void)
 {
+    /* When HSC is on, "connected" means authenticated. */
+    if (s_hsc_enabled) return s_ws_connected && s_authenticated;
     return s_ws_connected;
 }
 

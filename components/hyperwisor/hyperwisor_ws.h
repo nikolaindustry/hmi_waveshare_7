@@ -9,6 +9,7 @@
 #include "esp_err.h"
 #include "cJSON.h"
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,6 +23,16 @@ extern "C" {
 
 typedef void (*hyperwisor_ws_msg_cb_t)(const char *data, int len);
 typedef void (*hyperwisor_ws_conn_cb_t)(bool connected);
+
+/* HSC signer: sign the challenge (nonce, ts) and write the base64 signature
+ * into sig_out. Return ESP_OK on success. Wired to hyperwisor_hsc_sign(). */
+typedef esp_err_t (*hyperwisor_ws_signer_cb_t)(const char *nonce, const char *ts,
+                                               char *sig_out, size_t sig_len);
+
+/* Enable the HSC handshake. When enabled, the transport is not reported as
+ * connected (no conn_cb(true), no message delivery) until the relay returns
+ * auth_ok. `device_id` is used to build the auth frame. */
+void hyperwisor_ws_enable_hsc(hyperwisor_ws_signer_cb_t signer, const char *device_id);
 
 esp_err_t hyperwisor_ws_init(void);
 esp_err_t hyperwisor_ws_connect(const char *uri);

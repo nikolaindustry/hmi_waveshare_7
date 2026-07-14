@@ -113,6 +113,20 @@ void app_main(void)
          *     bindings, then start kicks off the state machine. */
         hyperwisor_set_port(&board_port_s3);
         if (hyperwisor_init() == ESP_OK) {
+            /* HSC v1 secure channel: MUST be enabled before start(). It
+             * generates/loads the on-chip P-256 key and makes the WS
+             * transport answer the secured relay's challenge on connect.
+             * The device is only reported "connected" after auth_ok.
+             * The public key is logged once so it can be registered with
+             * the platform (also handed to the app via SoftAP provisioning). */
+            if (hyperwisor_enable_security() == ESP_OK) {
+                char pub[128];
+                if (hyperwisor_get_public_key_b64(pub, sizeof(pub)) == ESP_OK) {
+                    ESP_LOGW(TAG, "HSC device public key (register with platform): %s", pub);
+                }
+            } else {
+                ESP_LOGE(TAG, "HSC enable failed - secured relay will reject this device");
+            }
             hyperwisor_app_init();
             hyperwisor_start();
         } else {

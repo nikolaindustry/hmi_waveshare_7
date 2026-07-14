@@ -82,6 +82,18 @@ bool      hyperwisor_has_credentials(void);
 esp_err_t hyperwisor_get_device_id(char *out_buf, size_t buf_len);
 esp_err_t hyperwisor_get_user_id(char *out_buf, size_t buf_len);
 
+/* --- HSC v1 security (opt-in) ---
+ * Enable the Hyperwisor Secure Channel: generates/loads the on-chip P-256 key
+ * and makes the transport answer the relay's challenge on connect. Call AFTER
+ * hyperwisor_init() and BEFORE hyperwisor_start(). Point the device at your
+ * secured relay via CONFIG_HYPERWISOR_WS_HOST. Devices that don't call this
+ * keep connecting as before (no handshake). */
+esp_err_t hyperwisor_enable_security(void);
+
+/* The device's public key (base64) — register with the platform during
+ * onboarding. Empty until hyperwisor_enable_security() runs. */
+esp_err_t hyperwisor_get_public_key_b64(char *out_buf, size_t buf_len);
+
 void hyperwisor_task(void *pvParam);
 
 #ifdef __cplusplus

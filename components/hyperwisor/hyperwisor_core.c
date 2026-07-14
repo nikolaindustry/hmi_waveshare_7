@@ -9,6 +9,7 @@
 #include "hyperwisor_ws.h"
 #include "hyperwisor_cmd.h"
 #include "hyperwisor_port.h"
+#include "hyperwisor_hsc.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -322,6 +323,32 @@ esp_err_t hyperwisor_get_user_id(char *out_buf, size_t buf_len)
     strncpy(out_buf, s_state.user_id, buf_len - 1);
     out_buf[buf_len - 1] = '\0';
     return ESP_OK;
+}
+
+/* --- HSC v1 security (opt-in) --- */
+
+/* Bridge the transport's signer callback to the HSC signer, using our device id. */
+static esp_err_t hsc_signer_bridge(const char *nonce, const char *ts,
+                                   char *sig_out, size_t sig_len)
+{
+    return hyperwisor_hsc_sign(s_state.device_id, nonce, ts, sig_out, sig_len);
+}
+
+esp_err_t hyperwisor_enable_security(void)
+{
+    esp_err_t err = hyperwisor_hsc_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "enable_security: HSC init failed — security NOT enabled");
+        return err;
+    }
+    hyperwisor_ws_enable_hsc(hsc_signer_bridge, s_state.device_id);
+    ESP_LOGI(TAG, "Security enabled — device will authenticate to the secured relay");
+    return ESP_OK;
+}
+
+esp_err_t hyperwisor_get_public_key_b64(char *out_buf, size_t buf_len)
+{
+    return hyperwisor_hsc_get_public_key_b64(out_buf, buf_len);
 }
 
 void hyperwisor_task(void *pvParam)

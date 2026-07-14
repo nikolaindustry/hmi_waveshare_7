@@ -4,6 +4,22 @@ All notable changes to the Hyperwisor IoT component will be documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] — 2026-07-03
+
+### Added — HSC v1 (Hyperwisor Secure Channel)
+Opt-in cryptographic device authentication so devices can't be impersonated or
+hijacked. Existing firmware is unaffected unless it calls `hyperwisor_enable_security()`.
+
+- `hyperwisor_hsc.{c,h}`: on-chip P-256 keypair (mbedTLS) generated at first boot
+  and stored in NVS — the private key never leaves the device.
+  `hyperwisor_hsc_get_public_key_b64()`, `hyperwisor_hsc_sign()`, and
+  `hyperwisor_hsc_register()` (registers the public key via `relay-register-device`).
+- WebSocket transport does the HSC challenge–response on connect and only reports
+  connected after `auth_ok`.
+- `hyperwisor_enable_security()` + `hyperwisor_get_public_key_b64()` in core.
+- Point the device at your secured relay via `CONFIG_HYPERWISOR_WS_HOST`.
+- `secure_hyperwisor` example.
+
 ## [0.1.0] — 2026-05-03
 
 Initial public release. Extracted from the `hyperwisor_s3` reference project

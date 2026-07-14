@@ -1,2 +1,8 @@
 dependencies:
   idf: ">=5.5,<7.0"
+  # Pin esp_websocket_client below 1.6: v1.7.x calls
+  # esp_transport_ws_get_redir_uri(), which only exists in IDF 6.0's
+  # tcp_transport. On IDF 5.5 that symbol is absent, so newer versions
+  # fail to build despite claiming idf>=5.0. Remove this cap if the
+  # project moves to IDF 6.x (but note the HSC crypto needs mbedTLS 3.x).
+  espressif/esp_websocket_client: ">=1.3,<1.6"

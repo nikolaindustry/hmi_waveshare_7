@@ -1,5 +1,6 @@
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_idf_version.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_rgb.h"
 #include "bsp.h"
@@ -32,8 +33,15 @@ esp_err_t bsp_display_start(void)
             .flags.pclk_active_neg = true,
         },
         .data_width         = BSP_LCD_DATA_WIDTH,
+        /* Color-format fields differ across IDF versions: 6.0 introduced
+         * in_color_format/out_color_format; 5.x uses bits_per_pixel.
+         * Guard so the BSP builds on both (5.5 for HSC, 6.0 otherwise). */
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
         .in_color_format    = LCD_COLOR_FMT_RGB565,
         .out_color_format   = LCD_COLOR_FMT_RGB565,
+#else
+        .bits_per_pixel     = BSP_LCD_BIT_PER_PIXEL,
+#endif
         .num_fbs            = 2,
         .bounce_buffer_size_px = BSP_LCD_H_RES * BSP_LCD_BOUNCE_BUFFER_HEIGHT,
         .hsync_gpio_num     = BSP_LCD_IO_HSYNC,

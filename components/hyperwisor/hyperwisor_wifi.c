@@ -6,6 +6,7 @@
 #include "hyperwisor_wifi.h"
 #include "hyperwisor_nvs.h"
 #include "hyperwisor_core.h"
+#include "hyperwisor_hsc.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -183,7 +184,7 @@ static const char *PROV_SUCCESS_HTML =
     "</style></head><body>"
     "<div class=\"card\"><h1>Configuration Sent!</h1>"
     "<p>Your device will now attempt to connect to the new Wi-Fi network.</p>"
-    "<a href=\"hypervisorv4://provisioning?status=success&message=Device_is_connecting_to_the_new_network.\">"
+    "<a href=\"hypervisorv4://provisioning?status=success&message=Device_is_connecting_to_the_new_network.%s\">"
     "Return to App</a></div></body></html>";
 
 static const char *PROV_ERROR_HTML =
@@ -204,6 +205,20 @@ static const char *PROV_ERROR_HTML =
     "<p>Error: Missing SSID</p>"
     "<a href=\"hypervisorv4://provisioning?status=error&message=Missing_SSID\">"
     "Return to App</a></div></body></html>";
+
+/* Percent-encode the base64 chars that are unsafe in a URL query value. */
+static void url_encode_b64(const char *in, char *out, size_t out_sz)
+{
+    size_t o = 0;
+    for (size_t i = 0; in[i] && o + 4 < out_sz; i++) {
+        char c = in[i];
+        if (c == '+')      { out[o++] = '%'; out[o++] = '2'; out[o++] = 'B'; }
+        else if (c == '/') { out[o++] = '%'; out[o++] = '2'; out[o++] = 'F'; }
+        else if (c == '=') { out[o++] = '%'; out[o++] = '3'; out[o++] = 'D'; }
+        else out[o++] = c;
+    }
+    out[o] = '\0';
+}
 
 static esp_err_t prov_handler(httpd_req_t *req)
 {
@@ -236,7 +251,21 @@ static esp_err_t prov_handler(httpd_req_t *req)
 
     if (strlen(ssid) > 0) {
         httpd_resp_set_type(req, "text/html");
-        httpd_resp_send(req, PROV_SUCCESS_HTML, HTTPD_RESP_USE_STRLEN);
+
+        /* HSC Phase 2: hand the device's public key back to the app in the
+         * provisioning ack (deep link) so the app can register it. Proximity to
+         * the device AP is the ownership proof. Only when security is enabled. */
+        char suffix[300] = {0};
+        char pub[128];
+        if (hyperwisor_hsc_ready() &&
+            hyperwisor_hsc_get_public_key_b64(pub, sizeof(pub)) == ESP_OK) {
+            char enc[180];
+            url_encode_b64(pub, enc, sizeof(enc));
+            snprintf(suffix, sizeof(suffix), "&public_key=%s&device_id=%s", enc, device_id);
+        }
+        static char page[1600];
+        snprintf(page, sizeof(page), PROV_SUCCESS_HTML, suffix);
+        httpd_resp_send(req, page, HTTPD_RESP_USE_STRLEN);
 
         /* Save credentials and restart */
         hyperwisor_set_credentials(ssid, password, device_id, user_id);

@@ -8,6 +8,7 @@ set(_srcs
     "hyperwisor_ntp.c"
     "hyperwisor_widget.c"
     "hyperwisor_port.c"
+    "hyperwisor_hsc.c"
 )
 
 # --- Feature-gated source files ---
@@ -37,6 +38,7 @@ set(_requires
     esp_https_ota
     app_update
     driver
+    mbedtls
 )
 
 set(_priv_requires

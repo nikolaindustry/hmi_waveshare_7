@@ -1,7 +1,7 @@
 ## Hyperwisor IoT — ESP-IDF component manifest
 ## https://components.espressif.com/
 
-version: "0.1.0"
+version: "0.3.0"
 description: >
   Hyperwisor IoT client for ESP-IDF. Drop-in WiFi + WebSocket + cloud
   command runtime with optional OTA, GPIO and dashboard widget support.
@@ -37,3 +37,4 @@ dependencies:
 
 examples:
   - path: ../examples/hello_hyperwisor
+  - path: ../examples/secure_hyperwisor
