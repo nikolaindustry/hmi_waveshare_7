@@ -95,6 +95,8 @@ static bool            s_paired;
 static uint8_t         s_peer[6];
 static uint8_t         s_lmk[16];
 static uint8_t         s_channel = 1;
+static volatile int8_t s_peer_rssi     = 0;   /* dBm from the peer's last frame  */
+static volatile int64_t s_peer_rssi_us = 0;   /* esp_timer_get_time() of that RX */
 static volatile int64_t s_pair_until_us;      /* pairing window (primary)  */
 static uint16_t        s_tx_seq;              /* link-level frame counter  */
 static uint16_t        s_last_rx_intent_seq;  /* dedup (primary)           */
@@ -160,6 +162,14 @@ void hmi_link_peer_str(char *buf, size_t len)
              s_peer[0], s_peer[1], s_peer[2], s_peer[3], s_peer[4], s_peer[5]);
 }
 
+bool hmi_link_peer_rssi(int8_t *out_dbm)
+{
+    if (!s_paired || s_peer_rssi_us == 0) return false;
+    if (esp_timer_get_time() - s_peer_rssi_us > 5 * 1000000) return false;
+    if (out_dbm) *out_dbm = s_peer_rssi;
+    return true;
+}
+
 /* ---- ESP-NOW plumbing -------------------------------------------------- */
 
 static void add_peer(const uint8_t mac[6], const uint8_t *lmk)
@@ -183,6 +193,11 @@ static void rx_cb(const esp_now_recv_info_t *info, const uint8_t *data, int len)
     const link_hdr_t *h = (const link_hdr_t *)data;
     if (h->magic != LINK_MAGIC) return;
 
+    if (s_paired && memcmp(info->src_addr, s_peer, 6) == 0 && info->rx_ctrl) {
+        s_peer_rssi    = info->rx_ctrl->rssi;
+        s_peer_rssi_us = esp_timer_get_time();
+    }
+
     rx_msg_t m;
     memcpy(m.mac, info->src_addr, 6);
     m.type = h->type;
@@ -202,11 +217,26 @@ static void send_frame(const uint8_t *mac, const void *frame, size_t len)
     }
 }
 
+/* esp_now_send() returning ESP_OK only means the radio accepted the
+ * frame for transmission, not that the peer heard it -- ESP-NOW unicast
+ * is 802.11-ACKed, and this callback reports the real outcome. A string
+ * of FAILED here (not a one-off) means the two radios are not actually
+ * within range on the same channel, even though pairing succeeded. */
+static void send_cb(const esp_now_send_info_t *info, esp_now_send_status_t status)
+{
+    if (status != ESP_NOW_SEND_SUCCESS) {
+        const uint8_t *d = info->des_addr;
+        ESP_LOGW(TAG, "esp_now send FAILED (no ACK) to %02x:%02x:%02x:%02x:%02x:%02x",
+                 d[0], d[1], d[2], d[3], d[4], d[5]);
+    }
+}
+
 static esp_err_t espnow_up(void)
 {
     esp_err_t err = esp_now_init();
     if (err != ESP_OK) { ESP_LOGE(TAG, "esp_now_init: %s", esp_err_to_name(err)); return err; }
     esp_now_set_pmk(s_pmk);
+    esp_now_register_send_cb(send_cb);
     esp_now_register_recv_cb(rx_cb);
     add_peer(BCAST, NULL);
     /* Modem power save silently drops ESP-NOW RX between DTIM beacons.
@@ -350,6 +380,13 @@ static void secondary_handle_rx(const rx_msg_t *m, bool *mirror_rx)
         const link_mirror_t *mir = (const link_mirror_t *)m->payload;
         hmi_sync_write_mirror(mir->regs);
         *mirror_rx = true;
+        /* Throttled: heartbeat is ~2.5 Hz, log every 20th (~8 s) so the
+         * link stays visible in the log without flooding it. */
+        static uint32_t s_mirror_rx_count;
+        if ((++s_mirror_rx_count % 20) == 1) {
+            ESP_LOGI(TAG, "mirror rx seq=%u (count=%lu)", m->seq,
+                     (unsigned long)s_mirror_rx_count);
+        }
         return;
     }
 

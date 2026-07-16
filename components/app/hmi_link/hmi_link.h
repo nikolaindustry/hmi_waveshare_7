@@ -52,6 +52,12 @@ bool hmi_link_pairing_active(void);
 /* Writes "aa:bb:cc:dd:ee:ff" (or "--") into buf. */
 void hmi_link_peer_str(char *buf, size_t len);
 
+/* Signal strength of the peer's most recent frame, in dBm (typically
+ * -30 .. -90; lower/more-negative = weaker). Returns false if nothing
+ * has been heard from the paired peer in the last 5 s (link is down
+ * or was never up), in which case *out_dbm is left unset. */
+bool hmi_link_peer_rssi(int8_t *out_dbm);
+
 #ifdef __cplusplus
 }
 #endif

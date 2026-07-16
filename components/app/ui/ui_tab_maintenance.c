@@ -513,6 +513,59 @@ static void on_role_card_clicked(lv_event_t *e)
     esp_restart();
 }
 
+/* ---- Wireless signal strength ----
+ * RSSI is dBm from the paired peer's most recent ESP-NOW frame:
+ *   > -55  excellent (same room)     -55..-70  good
+ *   -70..-85  weak (edge of range)   < -85 / no reading  effectively down
+ * Bars are a simple 4-step mapping, generous enough that "connected but
+ * far" reads as 1-2 bars rather than looking broken. */
+static lv_timer_t *s_role_link_timer;
+static lv_obj_t   *s_role_peer_lbl;
+static lv_obj_t   *s_role_rssi_lbl;
+
+static const char *rssi_bars(int8_t dbm)
+{
+    if (dbm >= -55) return LV_SYMBOL_WIFI "  Excellent";
+    if (dbm >= -70) return LV_SYMBOL_WIFI "  Good";
+    if (dbm >= -85) return LV_SYMBOL_WIFI "  Weak";
+    return LV_SYMBOL_WIFI "  Very weak";
+}
+
+static void role_link_refresh(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_role_peer_lbl || !s_role_rssi_lbl) return;
+
+    char peer[24];
+    hmi_link_peer_str(peer, sizeof(peer));
+    char peer_line[48];
+    snprintf(peer_line, sizeof(peer_line), "Paired peer: %s", peer);
+    lv_label_set_text(s_role_peer_lbl, peer_line);
+
+    int8_t dbm;
+    if (hmi_link_peer_rssi(&dbm)) {
+        char rssi_line[40];
+        snprintf(rssi_line, sizeof(rssi_line), "%s (%d dBm)", rssi_bars(dbm), dbm);
+        lv_label_set_text(s_role_rssi_lbl, rssi_line);
+        lv_obj_set_style_text_color(s_role_rssi_lbl,
+            hex(dbm >= -70 ? UI_COLOR_ON : UI_COLOR_HOT), 0);
+    } else if (hmi_link_paired()) {
+        lv_label_set_text(s_role_rssi_lbl, LV_SYMBOL_WIFI "  No signal (out of range?)");
+        lv_obj_set_style_text_color(s_role_rssi_lbl, hex(UI_COLOR_HOT), 0);
+    } else {
+        lv_label_set_text(s_role_rssi_lbl, "Not paired");
+        lv_obj_set_style_text_color(s_role_rssi_lbl, hex(UI_COLOR_MUTED), 0);
+    }
+}
+
+static void on_role_panel_deleted(lv_event_t *e)
+{
+    (void)e;
+    if (s_role_link_timer) { lv_timer_del(s_role_link_timer); s_role_link_timer = NULL; }
+    s_role_peer_lbl = NULL;
+    s_role_rssi_lbl = NULL;
+}
+
 static void detail_role(lv_obj_t *p)
 {
     detail_header(p, "HMI Role");
@@ -526,18 +579,22 @@ static void detail_role(lv_obj_t *p)
     lv_obj_set_style_text_color(desc, hex(UI_COLOR_DIM), 0);
     lv_obj_set_pos(desc, 20, 58);
 
+    /* Detail panel (s_detail) is 536 px wide -- 3 cards must fit inside
+     * that, not the full 800 px screen. 20 px side margins, 20 px gaps
+     * between cards: (536 - 40 - 40) / 3 = 152 px per card. */
     hmi_role_t current = hmi_role_get();
     static const struct { hmi_role_t id; const char *title; const char *sub; } roles[] = {
-        { HMI_ROLE_PRIMARY,            "PRIMARY",   "Drives relay, RGB, HVAC"     },
-        { HMI_ROLE_SECONDARY,          "SECONDARY", "Mirrors the primary via bus" },
-        { HMI_ROLE_SECONDARY_WIRELESS, "WIRELESS",  "Battery unit, radio mirror"  },
+        { HMI_ROLE_PRIMARY,            "PRIMARY",   "Relay+RGB+HVAC"    },
+        { HMI_ROLE_SECONDARY,          "SECONDARY", "Mirrors via bus"   },
+        { HMI_ROLE_SECONDARY_WIRELESS, "WIRELESS",  "Mirrors via radio" },
     };
+    const lv_coord_t card_w = 152, card_gap = 20, card_x0 = 20, card_y = 112, card_h = 96;
     for (int i = 0; i < 3; i++) {
         bool active = (roles[i].id == current);
         lv_obj_t *card = lv_obj_create(p);
         lv_obj_remove_style_all(card);
-        lv_obj_set_size(card, 232, 110);
-        lv_obj_set_pos(card, 20 + i * 244, 118);
+        lv_obj_set_size(card, card_w, card_h);
+        lv_obj_set_pos(card, card_x0 + i * (card_w + card_gap), card_y);
         lv_obj_set_style_bg_color(card,
             hex(active ? UI_COLOR_TAB : UI_COLOR_SURFACE_LO), 0);
         lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
@@ -552,43 +609,44 @@ static void detail_role(lv_obj_t *p)
 
         lv_obj_t *title = lv_label_create(card);
         lv_label_set_text(title, roles[i].title);
-        lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
         lv_obj_set_style_text_color(title, hex(UI_COLOR_TEXT), 0);
-        lv_obj_set_style_text_letter_space(title, 3, 0);
-        lv_obj_align(title, LV_ALIGN_TOP_LEFT, 14, 14);
+        lv_obj_set_style_text_letter_space(title, 1, 0);
+        lv_obj_align(title, LV_ALIGN_TOP_LEFT, 10, 12);
 
         lv_obj_t *sub = lv_label_create(card);
         lv_label_set_text(sub, roles[i].sub);
         lv_obj_set_style_text_font(sub, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(sub,
             hex(active ? UI_COLOR_TEXT : UI_COLOR_MUTED), 0);
-        lv_obj_align(sub, LV_ALIGN_BOTTOM_LEFT, 14, -14);
+        lv_obj_set_width(sub, card_w - 20);
+        lv_obj_align(sub, LV_ALIGN_BOTTOM_LEFT, 10, -10);
 
         if (active) {
             lv_obj_t *tick = lv_label_create(card);
             lv_label_set_text(tick, LV_SYMBOL_OK);
-            lv_obj_set_style_text_font(tick, &lv_font_montserrat_20, 0);
+            lv_obj_set_style_text_font(tick, &lv_font_montserrat_16, 0);
             lv_obj_set_style_text_color(tick, hex(UI_COLOR_TEXT), 0);
-            lv_obj_align(tick, LV_ALIGN_TOP_RIGHT, -12, 12);
+            lv_obj_align(tick, LV_ALIGN_TOP_RIGHT, -8, 10);
         }
     }
-
-    s_status_lbl = build_status_lbl(p, 20, 244);
 
     lv_obj_t *note = lv_label_create(p);
     lv_label_set_text(note, "Tap a card to save the new role and reboot.");
     lv_obj_set_style_text_font(note, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(note, hex(UI_COLOR_DIM), 0);
-    lv_obj_set_pos(note, 20, 286);
+    lv_obj_set_pos(note, 20, card_y + card_h + 10);
 
     /* ---- Wireless pairing ----
      * PRIMARY: opens a 60 s window that accepts the next PAIR_REQ.
      * WIRELESS: forgets the binding; the link task then re-scans and
-     * pairs to whichever primary has its window open. */
+     * pairs to whichever primary has its window open. Sits below the
+     * note, still inside the 536x336 detail panel. */
+    lv_coord_t pair_y = card_y + card_h + 36;
     lv_obj_t *pair = lv_obj_create(p);
     lv_obj_remove_style_all(pair);
-    lv_obj_set_size(pair, 190, 44);
-    lv_obj_set_pos(pair, 560, 236);
+    lv_obj_set_size(pair, 170, 40);
+    lv_obj_set_pos(pair, 20, pair_y);
     lv_obj_set_style_bg_color(pair, hex(UI_COLOR_SURFACE_HI), 0);
     lv_obj_set_style_bg_opa(pair, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(pair, 10, 0);
@@ -599,20 +657,31 @@ static void detail_role(lv_obj_t *p)
     lv_obj_add_event_cb(pair, on_pair_clicked, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *pl = lv_label_create(pair);
-    lv_label_set_text(pl, LV_SYMBOL_WIFI "  PAIR WIRELESS");
+    lv_label_set_text(pl, LV_SYMBOL_WIFI " PAIR WIRELESS");
     lv_obj_set_style_text_font(pl, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(pl, hex(UI_COLOR_TEXT), 0);
     lv_obj_center(pl);
 
-    char peer[24];
-    hmi_link_peer_str(peer, sizeof(peer));
-    char peer_line[48];
-    snprintf(peer_line, sizeof(peer_line), "Paired peer: %s", peer);
-    lv_obj_t *pinfo = lv_label_create(p);
-    lv_label_set_text(pinfo, peer_line);
-    lv_obj_set_style_text_font(pinfo, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(pinfo, hex(UI_COLOR_MUTED), 0);
-    lv_obj_set_pos(pinfo, 560, 290);
+    s_role_peer_lbl = lv_label_create(p);
+    lv_obj_set_style_text_font(s_role_peer_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_role_peer_lbl, hex(UI_COLOR_MUTED), 0);
+    lv_obj_set_pos(s_role_peer_lbl, 210, pair_y + 2);
+
+    /* Signal strength -- only meaningful once paired; role_link_refresh()
+     * fills both labels immediately and every second after. */
+    s_role_rssi_lbl = lv_label_create(p);
+    lv_obj_set_style_text_font(s_role_rssi_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_pos(s_role_rssi_lbl, 210, pair_y + 20);
+
+    role_link_refresh(NULL);
+    s_role_link_timer = lv_timer_create(role_link_refresh, 1000, NULL);
+    /* s_detail (== p) is a persistent container the shell only clears
+     * between sections (lv_obj_clean), never deletes -- hooking DELETE
+     * on it would never fire and leak a timer per visit. Hook a child
+     * instead, exactly like the Cloud screen's s_cloud_timer cleanup. */
+    lv_obj_add_event_cb(s_role_peer_lbl, on_role_panel_deleted, LV_EVENT_DELETE, NULL);
+
+    s_status_lbl = build_status_lbl(p, 20, pair_y + 48);
 }
 
 /* =======================================================================
