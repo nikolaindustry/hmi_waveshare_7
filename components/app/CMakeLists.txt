@@ -28,6 +28,7 @@ idf_component_register(
         "sensor/bmp280.c"
         "hmi_role/hmi_role.c"
         "hmi_sync/hmi_sync.c"
+        "hmi_link/hmi_link.c"
         "bus_config/bus_config.c"
         "cloud/hyperwisor_app.c"
         "cloud/board_s3.c"
@@ -39,6 +40,7 @@ idf_component_register(
         "sensor"
         "hmi_role"
         "hmi_sync"
+        "hmi_link"
         "bus_config"
         "cloud"
     REQUIRES
@@ -47,6 +49,9 @@ idf_component_register(
         nvs_flash
         esp_timer
         hyperwisor
+        esp_wifi
+        esp_netif
+        esp_event
     PRIV_REQUIRES
         esp_driver_uart
         esp_driver_i2c

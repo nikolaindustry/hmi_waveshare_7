@@ -88,7 +88,7 @@ static void refresh_all(void)
  * push (~500 ms) confirms or corrects. */
 static inline void ac_push_secondary(hmi_ac_field_t field, uint16_t value)
 {
-    if (hmi_role_get() == HMI_ROLE_SECONDARY) {
+    if (hmi_role_is_secondary()) {
         hmi_sync_push_intent(HMI_CMD_AC_SET, (uint16_t)field, value, 0);
     }
 }

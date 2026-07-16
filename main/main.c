@@ -12,6 +12,7 @@
 #include "bmp280.h"
 #include "hmi_role.h"
 #include "hmi_sync.h"
+#include "hmi_link.h"
 #include "bus_config.h"
 #include "hyperwisor.h"
 #include "hyperwisor_app.h"
@@ -132,13 +133,24 @@ void app_main(void)
         } else {
             ESP_LOGW(TAG, "hyperwisor_init failed - cloud features disabled");
         }
-    } else {
-        /* SECONDARY: install the UART driver only, then run the slave.
-         * modbus_client_init() is still called because it owns the UART
-         * driver install -- the master worker is simply never started. */
+
+        /* 3d) Wireless secondary link (ESP-NOW). Runs alongside the wired
+         *     path -- a van can have a wired secondary, a wireless one, or
+         *     both. Waits internally for the cloud stack's WiFi, so order
+         *     after hyperwisor_start(). Idle when no peer is paired. */
+        hmi_link_primary_start();
+    } else if (role == HMI_ROLE_SECONDARY) {
+        /* WIRED SECONDARY: install the UART driver only, then run the
+         * slave. modbus_client_init() is still called because it owns the
+         * UART driver install -- the master worker is simply never started. */
         if (modbus_client_init(baud) == ESP_OK) {
             modbus_server_start(HMI_SECONDARY_SLAVE_ID);
         }
+    } else {
+        /* WIRELESS SECONDARY: no RS-485, no cloud. The link task owns the
+         * WiFi radio and moves the same intent/mirror blocks over ESP-NOW.
+         * Auto-pairs on first boot (primary must open its PAIR window). */
+        hmi_link_secondary_start();
     }
 
     /* 4) Hand control to application (LVGL UI + Hyperwisor IoT logic) */

@@ -1,4 +1,5 @@
 #pragma once
+#include <stdbool.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -8,10 +9,14 @@ extern "C" {
 /* ------------------------------------------------------------------
  * HMI role persistence.
  *
- * Two physical displays on the same RS-485 bus; one acts as the
- * Modbus master (talks to the relay board + RGB slave) and owns the
- * BMP280 + HVAC controller, the other acts as a Modbus slave at
- * address 0x10 and mirrors the primary's state.
+ * Multiple physical displays share one van; one acts as the Modbus
+ * master (talks to the relay board + RGB slave) and owns the BMP280
+ * + HVAC controller. A secondary display mirrors the primary's state
+ * and forwards user taps as intents. Two secondary flavours exist:
+ *
+ *   SECONDARY          wired  -- Modbus slave 0x10 on the RS-485 bus
+ *   SECONDARY_WIRELESS radio  -- battery unit, same intent/mirror
+ *                                blocks carried over ESP-NOW
  *
  * The role is stored in NVS so the same firmware binary can be
  * flashed to both displays. Default on first boot is PRIMARY; the
@@ -19,8 +24,9 @@ extern "C" {
  * ------------------------------------------------------------------ */
 
 typedef enum {
-    HMI_ROLE_PRIMARY   = 0,
-    HMI_ROLE_SECONDARY = 1,
+    HMI_ROLE_PRIMARY            = 0,
+    HMI_ROLE_SECONDARY          = 1,
+    HMI_ROLE_SECONDARY_WIRELESS = 2,
 } hmi_role_t;
 
 /* Read the persisted role (default PRIMARY). Safe to call once at
@@ -30,6 +36,11 @@ esp_err_t hmi_role_init(void);
 /* Return the current role. Never fails after init (falls back to
  * PRIMARY if init was skipped). */
 hmi_role_t hmi_role_get(void);
+
+/* True for either secondary flavour (wired or wireless). UI / sync
+ * code that asks "am I a mirror display?" must use this rather than
+ * comparing against HMI_ROLE_SECONDARY directly. */
+bool hmi_role_is_secondary(void);
 
 /* Persist the new role. Caller is expected to reboot shortly after
  * so every subsystem picks up the new behaviour cleanly. */

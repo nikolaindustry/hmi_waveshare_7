@@ -52,8 +52,9 @@ esp_err_t hmi_role_init(void)
     nvs_close(h);
 
     if (err == ESP_OK) {
-        s_role = (v == HMI_ROLE_SECONDARY) ? HMI_ROLE_SECONDARY
-                                           : HMI_ROLE_PRIMARY;
+        s_role = (v == HMI_ROLE_SECONDARY ||
+                  v == HMI_ROLE_SECONDARY_WIRELESS) ? (hmi_role_t)v
+                                                    : HMI_ROLE_PRIMARY;
         ESP_LOGI(TAG, "loaded role=%s", hmi_role_str(s_role));
     } else {
         ESP_LOGI(TAG, "key not set, default PRIMARY");
@@ -65,10 +66,17 @@ esp_err_t hmi_role_init(void)
 
 hmi_role_t hmi_role_get(void) { return s_role; }
 
+bool hmi_role_is_secondary(void)
+{
+    return s_role == HMI_ROLE_SECONDARY ||
+           s_role == HMI_ROLE_SECONDARY_WIRELESS;
+}
+
 esp_err_t hmi_role_set(hmi_role_t role)
 {
     if (!s_inited) hmi_role_init();
-    if (role != HMI_ROLE_PRIMARY && role != HMI_ROLE_SECONDARY) {
+    if (role != HMI_ROLE_PRIMARY && role != HMI_ROLE_SECONDARY &&
+        role != HMI_ROLE_SECONDARY_WIRELESS) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -94,8 +102,9 @@ esp_err_t hmi_role_set(hmi_role_t role)
 const char *hmi_role_str(hmi_role_t role)
 {
     switch (role) {
-        case HMI_ROLE_PRIMARY:   return "PRIMARY";
-        case HMI_ROLE_SECONDARY: return "SECONDARY";
-        default:                 return "?";
+        case HMI_ROLE_PRIMARY:            return "PRIMARY";
+        case HMI_ROLE_SECONDARY:          return "SECONDARY";
+        case HMI_ROLE_SECONDARY_WIRELESS: return "WIRELESS";
+        default:                          return "?";
     }
 }

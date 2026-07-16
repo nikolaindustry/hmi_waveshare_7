@@ -4,6 +4,7 @@
 #include "tile_names.h"
 #include "ctrl_state.h"
 #include "hmi_role.h"
+#include "hmi_link.h"
 #include "bus_config.h"
 #include "img_nikola_logo.h"
 #include "hyperwisor.h"
@@ -478,10 +479,32 @@ static void detail_switches(lv_obj_t *p)
  *  Detail: HMI Role
  * ======================================================================= */
 
+static void on_pair_clicked(lv_event_t *e)
+{
+    (void)e;
+    switch (hmi_role_get()) {
+        case HMI_ROLE_PRIMARY:
+            hmi_link_pair_begin(60);
+            show_status("Pairing window open (60 s) -- tap PAIR on the wireless unit",
+                        UI_COLOR_TAB);
+            break;
+        case HMI_ROLE_SECONDARY_WIRELESS:
+            hmi_link_forget();
+            show_status("Binding cleared -- searching for a primary in pairing mode",
+                        UI_COLOR_TAB);
+            break;
+        default:
+            show_status("Pairing applies to PRIMARY / WIRELESS roles only",
+                        UI_COLOR_HOT);
+            break;
+    }
+}
+
 static void on_role_card_clicked(lv_event_t *e)
 {
     int id = (int)(intptr_t)lv_event_get_user_data(e);
-    if (id != HMI_ROLE_PRIMARY && id != HMI_ROLE_SECONDARY) return;
+    if (id != HMI_ROLE_PRIMARY && id != HMI_ROLE_SECONDARY &&
+        id != HMI_ROLE_SECONDARY_WIRELESS) return;
     if ((hmi_role_t)id == hmi_role_get()) return;
     show_status("Applying role\xE2\x80\xA6", UI_COLOR_TAB);
     hmi_role_set((hmi_role_t)id);
@@ -497,23 +520,24 @@ static void detail_role(lv_obj_t *p)
     lv_obj_t *desc = lv_label_create(p);
     lv_label_set_text(desc,
         "Pick which role this display runs as. The PRIMARY owns the\n"
-        "RS-485 bus and drives relays + RGB + HVAC. The SECONDARY\n"
-        "mirrors the primary's state over the bus.");
+        "RS-485 bus and drives relays + RGB + HVAC. Secondaries mirror\n"
+        "the primary: SECONDARY over the bus, WIRELESS over ESP-NOW.");
     lv_obj_set_style_text_font(desc, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(desc, hex(UI_COLOR_DIM), 0);
     lv_obj_set_pos(desc, 20, 58);
 
     hmi_role_t current = hmi_role_get();
     static const struct { hmi_role_t id; const char *title; const char *sub; } roles[] = {
-        { HMI_ROLE_PRIMARY,   "PRIMARY",   "Drives relay, RGB, HVAC"     },
-        { HMI_ROLE_SECONDARY, "SECONDARY", "Mirrors the primary via bus" },
+        { HMI_ROLE_PRIMARY,            "PRIMARY",   "Drives relay, RGB, HVAC"     },
+        { HMI_ROLE_SECONDARY,          "SECONDARY", "Mirrors the primary via bus" },
+        { HMI_ROLE_SECONDARY_WIRELESS, "WIRELESS",  "Battery unit, radio mirror"  },
     };
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 3; i++) {
         bool active = (roles[i].id == current);
         lv_obj_t *card = lv_obj_create(p);
         lv_obj_remove_style_all(card);
-        lv_obj_set_size(card, 242, 110);
-        lv_obj_set_pos(card, 20 + i * 254, 118);
+        lv_obj_set_size(card, 232, 110);
+        lv_obj_set_pos(card, 20 + i * 244, 118);
         lv_obj_set_style_bg_color(card,
             hex(active ? UI_COLOR_TAB : UI_COLOR_SURFACE_LO), 0);
         lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
@@ -556,6 +580,39 @@ static void detail_role(lv_obj_t *p)
     lv_obj_set_style_text_font(note, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(note, hex(UI_COLOR_DIM), 0);
     lv_obj_set_pos(note, 20, 286);
+
+    /* ---- Wireless pairing ----
+     * PRIMARY: opens a 60 s window that accepts the next PAIR_REQ.
+     * WIRELESS: forgets the binding; the link task then re-scans and
+     * pairs to whichever primary has its window open. */
+    lv_obj_t *pair = lv_obj_create(p);
+    lv_obj_remove_style_all(pair);
+    lv_obj_set_size(pair, 190, 44);
+    lv_obj_set_pos(pair, 560, 236);
+    lv_obj_set_style_bg_color(pair, hex(UI_COLOR_SURFACE_HI), 0);
+    lv_obj_set_style_bg_opa(pair, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(pair, 10, 0);
+    lv_obj_set_style_border_width(pair, 1, 0);
+    lv_obj_set_style_border_color(pair, hex(UI_COLOR_STROKE), 0);
+    lv_obj_clear_flag(pair, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(pair, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(pair, on_pair_clicked, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *pl = lv_label_create(pair);
+    lv_label_set_text(pl, LV_SYMBOL_WIFI "  PAIR WIRELESS");
+    lv_obj_set_style_text_font(pl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(pl, hex(UI_COLOR_TEXT), 0);
+    lv_obj_center(pl);
+
+    char peer[24];
+    hmi_link_peer_str(peer, sizeof(peer));
+    char peer_line[48];
+    snprintf(peer_line, sizeof(peer_line), "Paired peer: %s", peer);
+    lv_obj_t *pinfo = lv_label_create(p);
+    lv_label_set_text(pinfo, peer_line);
+    lv_obj_set_style_text_font(pinfo, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(pinfo, hex(UI_COLOR_MUTED), 0);
+    lv_obj_set_pos(pinfo, 560, 290);
 }
 
 /* =======================================================================

@@ -75,7 +75,7 @@ bool modbus_task_link_online(void)
      * the primary. Drive the link pill from "did we get a mirror push
      * from the primary recently?" instead: hmi_sync_mirror_seq() is
      * bumped on every successful FC10 write from the primary. */
-    if (hmi_role_get() == HMI_ROLE_SECONDARY) {
+    if (hmi_role_is_secondary()) {
         static uint32_t  last_seen_seq  = 0;
         static TickType_t last_seen_tick = 0;
         uint32_t  seq = hmi_sync_mirror_seq();
@@ -151,7 +151,7 @@ void modbus_task_request(uint16_t coil, bool on)
      * the instant the user taps, instead of waiting for the next mirror
      * push (~100-500 ms away). pending=true so the tile shows its
      * in-flight border until the mirror confirms (or corrects) it. */
-    if (hmi_role_get() == HMI_ROLE_SECONDARY) {
+    if (hmi_role_is_secondary()) {
         hmi_sync_push_intent(HMI_CMD_COIL_SET, coil, on ? 1 : 0, 0);
         ctrl_toggle_t *t = find_by_coil(coil);
         if (t) {
@@ -278,6 +278,9 @@ static void drain_rgb_slots(void)
             (uint16_t)b,
             on ? 0u /* MODE_STATIC */ : 2u /* MODE_OFF */,
         };
+        ESP_LOGI(TAG, "RGB cmd: FC10 slave=0x%02x regs[%u..%u]=R%u G%u B%u MODE=%s",
+                 slave, (unsigned)start, (unsigned)start + 3,
+                 r, g, b, on ? "STATIC" : "OFF");
         esp_err_t err = modbus_client_write_hregs(slave, start, 4, regs);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "rgb write to 0x%02x reg %u failed: %s",

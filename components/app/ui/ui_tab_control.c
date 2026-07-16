@@ -345,7 +345,7 @@ static void push_rgb_to_slave(void)
 {
     if (!s_rgb_target) return;
 
-    if (hmi_role_get() == HMI_ROLE_SECONDARY) {
+    if (hmi_role_is_secondary()) {
         uint16_t zone = (s_rgb_target == ctrl_rgb_roof()) ? 0u : 1u;
         uint16_t a2   = ((uint16_t)(s_rgb_target->on ? 1u : 0u) << 15)
                       | ((uint16_t)s_rgb_target->sat        << 8)
@@ -886,7 +886,7 @@ static void star_int_label_refresh(void)
  * then pushes a single intent so the primary can mirror the change. */
 static void star_push_secondary(void)
 {
-    if (hmi_role_get() != HMI_ROLE_SECONDARY) return;
+    if (!hmi_role_is_secondary()) return;
     const ctrl_star_t *st = ctrl_star_roof();
     hmi_sync_push_intent(HMI_CMD_STAR_SET,
                          st->on ? 1u : 0u,
