@@ -172,12 +172,31 @@ bool hmi_link_peer_rssi(int8_t *out_dbm)
 
 /* ---- ESP-NOW plumbing -------------------------------------------------- */
 
+/* ESP-NOW peers are bound to one WiFi interface (STA or AP); a send to
+ * a peer registered on the wrong one fails with ESP_ERR_ESPNOW_IF even
+ * though the radio is otherwise fine. A brand-new, unprovisioned unit
+ * has no cloud credentials yet, so hyperwisor's WiFi stack sits in
+ * SoftAP (its onboarding hotspot) rather than STA -- local wireless
+ * pairing must keep working in that state, not just after the van's
+ * owner has set up the cloud connection. Always ask the radio which
+ * interface is actually live rather than assuming STA. */
+static wifi_interface_t current_ifidx(void)
+{
+    wifi_mode_t mode = WIFI_MODE_NULL;
+    esp_wifi_get_mode(&mode);
+    return (mode == WIFI_MODE_AP) ? WIFI_IF_AP : WIFI_IF_STA;
+}
+
+static wifi_interface_t s_peer_ifidx = WIFI_IF_STA;
+
 static void add_peer(const uint8_t mac[6], const uint8_t *lmk)
 {
+    s_peer_ifidx = current_ifidx();
+
     esp_now_peer_info_t p = { 0 };
     memcpy(p.peer_addr, mac, 6);
     p.channel = 0;                       /* follow current radio channel */
-    p.ifidx   = WIFI_IF_STA;
+    p.ifidx   = s_peer_ifidx;
     if (lmk) {
         p.encrypt = true;
         memcpy(p.lmk, lmk, 16);
@@ -185,6 +204,18 @@ static void add_peer(const uint8_t mac[6], const uint8_t *lmk)
     esp_now_del_peer(mac);               /* replace if it already exists */
     esp_err_t err = esp_now_add_peer(&p);
     if (err != ESP_OK) ESP_LOGE(TAG, "add_peer: %s", esp_err_to_name(err));
+}
+
+/* Call once per loop tick on both roles. If the radio's interface
+ * changed since peers were last registered (e.g. SoftAP provisioning
+ * finished and the stack switched to STA), every previously-added peer
+ * is now on the wrong interface and silently fails -- re-add them. */
+static void resync_peer_ifidx(void)
+{
+    if (current_ifidx() == s_peer_ifidx) return;
+    ESP_LOGI(TAG, "WiFi interface changed (AP<->STA) -- re-registering ESP-NOW peers");
+    add_peer(BCAST, NULL);
+    if (s_paired) add_peer(s_peer, s_lmk);
 }
 
 static void rx_cb(const esp_now_recv_info_t *info, const uint8_t *data, int len)
@@ -342,6 +373,8 @@ static void primary_task(void *arg)
     TickType_t next_mirror    = xTaskGetTickCount();
 
     for (;;) {
+        resync_peer_ifidx();
+
         rx_msg_t m;
         while (xQueueReceive(s_rxq, &m, 0) == pdTRUE) primary_handle_rx(&m);
 
@@ -458,6 +491,8 @@ static void secondary_task(void *arg)
     TickType_t next_hop      = xTaskGetTickCount();
 
     for (;;) {
+        resync_peer_ifidx();
+
         bool mirror_rx = false;
         rx_msg_t m;
         while (xQueueReceive(s_rxq, &m, 0) == pdTRUE) {
