@@ -37,11 +37,33 @@ typedef struct {
     bool     on;
 } ctrl_rgb_t;
 
-/* Ambient fibre-optic star roof. */
+/* Ambient fibre-optic star roof. Driven by a plain on/off relay coil,
+ * so `intensity` is currently cosmetic -- a relay cannot dim. Kept in
+ * the struct (and in the HMI-to-HMI mirror) so a dimmable illuminator
+ * can be supported later without a protocol change. */
 typedef struct {
     bool    on;
-    uint8_t intensity; /* 0..100 */
+    uint8_t intensity; /* 0..100 -- not wired to hardware yet */
 } ctrl_star_t;
+
+/* Relay coil for the star roof on the Waveshare 16CH board (slave 0x01).
+ *
+ * Coil budget on that board: 0..7 reading lights, 8/9/10 HVAC fan taps,
+ * 12 HVAC compressor clutch. 15 was nominally "Switch 8" but is not
+ * driven by HVAC, so it is the safest free channel; Switch 8 has been
+ * unmapped (CTRL_COIL_NONE) to keep exactly one owner per coil. */
+#define CTRL_STAR_COIL  15u
+
+/* Load the persisted RGB / star-roof settings from NVS. Call at boot
+ * BEFORE the display comes up, alongside the other NVS loads, so the
+ * first paint already shows the saved colours. Relay coil states are
+ * NOT persisted -- those are read back from the relay board itself. */
+void ctrl_state_init(void);
+
+/* Start the background writer that re-saves those settings whenever
+ * they settle on a new value. Creates an LVGL timer, so this must run
+ * AFTER LVGL is initialised (i.e. after bsp_init()). */
+void ctrl_state_start_autosave(void);
 
 /* Singletons ------------------------------------------------------- */
 ctrl_rgb_t    *ctrl_rgb_roof(void);

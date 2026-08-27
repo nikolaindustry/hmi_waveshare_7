@@ -5,6 +5,7 @@
 #include "ui_theme.h"
 #include "owner_name.h"
 #include "tile_names.h"
+#include "ctrl_state.h"
 #include "modbus_client.h"
 #include "modbus_task.h"
 #include "modbus_server.h"
@@ -55,6 +56,11 @@ void app_main(void)
      * panel's DMA EOF ISR starts firing. */
     tile_names_init();
 
+    /* Restore the saved RGB / star-roof colours so the first paint
+     * shows the customer's settings, not the defaults. The matching
+     * autosave timer needs LVGL and is started after bsp_init(). */
+    ctrl_state_init();
+
     /* Load persisted LCD brightness level. The value is applied right
      * after bsp_init() below (LVGL must be up first). All flash reads
      * stay before the RGB panel's DMA EOF ISR comes online. */
@@ -68,6 +74,9 @@ void app_main(void)
      * backlight through CH422G EXIO2. A brief ~one-frame flash at full
      * brightness is expected between bsp_init's backlight-on and here. */
     display_brightness_apply();
+
+    /* LVGL is up now, so the zone-settings autosave timer can run. */
+    ctrl_state_start_autosave();
 
     /* 3) Role-branched boot.
      *

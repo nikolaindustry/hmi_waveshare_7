@@ -285,6 +285,12 @@ static lv_obj_t         *s_rgb_brt_slider;
 static lv_obj_t         *s_rgb_brt_value;
 static ctrl_rgb_t       *s_rgb_target;
 static power_pill_ctx_t  s_rgb_pp;
+static lv_timer_t       *s_rgb_timer;
+static uint32_t          s_rgb_last_seq;
+
+/* Defined below build_rgb_detail(), which installs them. */
+static void rgb_sync_cb(lv_timer_t *t);
+static void rgb_destroy_cb(lv_event_t *e);
 
 /* Modbus routing for each RGB zone. Both zones now live on the same
  * ESP32 RGB slave (0x20); they differ only by their register-block
@@ -471,6 +477,61 @@ static void build_rgb_detail(lv_obj_t *p, ctrl_rgb_t *zone, const char *title)
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(hint, hex(UI_COLOR_DIM), 0);
     lv_obj_set_pos(hint, 20, 298);
+
+    /* Live-refresh from remote changes (other HMI / wireless / cloud). */
+    s_rgb_last_seq = modbus_task_state_seq();
+    s_rgb_timer    = lv_timer_create(rgb_sync_cb, 200, NULL);
+    lv_obj_add_event_cb(s_rgb_wheel, rgb_destroy_cb, LV_EVENT_DELETE, NULL);
+}
+
+/* Repaint the RGB controls when the zone changed somewhere else -- the
+ * other HMI, the wireless unit, or the cloud app. Without this the
+ * screen only picked up remote changes when it was rebuilt, i.e. by
+ * navigating away and back. */
+static void rgb_sync_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_rgb_target) return;
+
+    uint32_t seq = modbus_task_state_seq();
+    if (seq == s_rgb_last_seq) return;
+
+    /* Never yank a control out from under the user's finger. Leave
+     * s_rgb_last_seq alone so the update is applied on a later tick,
+     * once they let go, rather than being dropped. */
+    if (s_rgb_wheel && lv_obj_has_state(s_rgb_wheel, LV_STATE_PRESSED)) return;
+    if (s_rgb_brt_slider && lv_obj_has_state(s_rgb_brt_slider, LV_STATE_PRESSED)) return;
+
+    s_rgb_last_seq = seq;
+
+    if (s_rgb_wheel) {
+        lv_color_hsv_t hsv = { .h = s_rgb_target->hue,
+                               .s = s_rgb_target->sat,
+                               .v = 100 };
+        lv_colorwheel_set_hsv(s_rgb_wheel, hsv);
+    }
+    if (s_rgb_brt_slider) {
+        lv_slider_set_value(s_rgb_brt_slider, s_rgb_target->brightness, LV_ANIM_OFF);
+    }
+    rgb_brt_label_refresh();
+    if (s_rgb_pp.pill) {
+        power_pill_paint(s_rgb_pp.pill, s_rgb_pp.label, s_rgb_target->on);
+    }
+}
+
+/* s_detail is cleared (lv_obj_clean) rather than deleted between
+ * sections, so hook the teardown on a child widget -- same approach as
+ * the toggle-list timer. */
+static void rgb_destroy_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_rgb_timer) { lv_timer_del(s_rgb_timer); s_rgb_timer = NULL; }
+    s_rgb_wheel      = NULL;
+    s_rgb_brt_slider = NULL;
+    s_rgb_brt_value  = NULL;
+    s_rgb_target     = NULL;
+    s_rgb_pp.pill    = NULL;
+    s_rgb_pp.label   = NULL;
 }
 
 static void detail_rgb_roof(lv_obj_t *p)  { build_rgb_detail(p, ctrl_rgb_roof(),  "RGB Roof");  }
@@ -882,16 +943,24 @@ static void star_int_label_refresh(void)
     lv_label_set_text(s_star_int_value, buf);
 }
 
-/* When running as SECONDARY the UI tab mutates local ctrl_star state and
- * then pushes a single intent so the primary can mirror the change. */
-static void star_push_secondary(void)
+/* Apply a star-roof change.
+ *
+ * SECONDARY has no bus access, so it mutates local state and pushes one
+ * intent for the primary to replay. PRIMARY owns the relay board and
+ * drives CTRL_STAR_COIL directly. Only the on/off state reaches the
+ * hardware -- the intensity slider is cosmetic on a plain relay. */
+static void star_apply(void)
 {
-    if (!hmi_role_is_secondary()) return;
     const ctrl_star_t *st = ctrl_star_roof();
-    hmi_sync_push_intent(HMI_CMD_STAR_SET,
-                         st->on ? 1u : 0u,
-                         (uint16_t)st->intensity,
-                         0u);
+
+    if (hmi_role_is_secondary()) {
+        hmi_sync_push_intent(HMI_CMD_STAR_SET,
+                             st->on ? 1u : 0u,
+                             (uint16_t)st->intensity,
+                             0u);
+        return;
+    }
+    modbus_task_request(CTRL_STAR_COIL, st->on);
 }
 
 static void on_star_int_change(lv_event_t *e)
@@ -899,7 +968,7 @@ static void on_star_int_change(lv_event_t *e)
     (void)e;
     ctrl_star_roof()->intensity = (uint8_t)lv_slider_get_value(s_star_int_slider);
     star_int_label_refresh();
-    star_push_secondary();
+    star_apply();
 }
 
 static void detail_star(lv_obj_t *p)
@@ -907,7 +976,7 @@ static void detail_star(lv_obj_t *p)
     ctrl_star_t *st = ctrl_star_roof();
     detail_header(p, "Star Roof");
 
-    s_star_pp = (power_pill_ctx_t){ .target = &st->on, .after = star_push_secondary };
+    s_star_pp = (power_pill_ctx_t){ .target = &st->on, .after = star_apply };
     build_power_pill(p, &s_star_pp, 444, 14);
 
     lv_obj_t *lbl = lv_label_create(p);

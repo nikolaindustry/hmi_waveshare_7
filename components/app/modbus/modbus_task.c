@@ -209,6 +209,18 @@ void modbus_task_request_rgb(uint8_t slave, uint16_t start_reg,
         s_rgb_slots[idx].dirty = true;
     }
     portEXIT_CRITICAL(&s_rgb_lock);
+
+    /* Bump the state counter so open UI screens repaint. Without this a
+     * colour change arriving from the wireless HMI, the wired secondary
+     * or the cloud app would update ctrl_rgb_* silently and the RGB
+     * screen would keep showing the old colour until it was rebuilt by
+     * switching tabs. */
+    s_seq++;
+}
+
+void modbus_task_bump_seq(void)
+{
+    s_seq++;
 }
 
 static void handle_write(const mb_req_t *req)

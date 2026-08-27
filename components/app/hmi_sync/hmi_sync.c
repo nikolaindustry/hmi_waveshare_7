@@ -191,11 +191,21 @@ void hmi_sync_apply_intent(hmi_cmd_t cmd, uint16_t a0, uint16_t a1, uint16_t a2)
         case HMI_CMD_STAR_SET: {
             ctrl_star_t *s = ctrl_star_roof();
             if (s) { s->on = a0 != 0; s->intensity = (uint8_t)(a1 > 100 ? 100 : a1); }
+            /* We are the primary (only it applies intents), so drive the
+             * star relay. Intensity is not sent -- it is a plain on/off
+             * coil, the slider is cosmetic. */
+            modbus_task_request(CTRL_STAR_COIL, a0 != 0);
             break;
         }
         case HMI_CMD_NONE:
         default: break;
     }
+
+    /* Every branch above mutates local state on behalf of a REMOTE
+     * request. Some (AC, star) never touch modbus_task, so nothing
+     * would otherwise advance the state counter and any screen already
+     * open would show stale values until it was rebuilt. */
+    modbus_task_bump_seq();
 }
 
 uint16_t hmi_sync_primary_last_seq(void)          { return s_primary_last_seq; }

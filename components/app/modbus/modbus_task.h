@@ -54,6 +54,11 @@ bool modbus_task_link_online(void);
  * any toggle state. The UI polls this to decide when to repaint. */
 uint32_t modbus_task_state_seq(void);
 
+/* Force the state counter forward. For state that changed without going
+ * through this module (e.g. hmi_sync applying a remote intent that only
+ * touches ctrl_state), so open UI screens still notice and repaint. */
+void modbus_task_bump_seq(void);
+
 /* Halt the worker's polling loop. The call blocks (up to timeout_ms) until
  * the worker confirms it has reached a quiescent point, i.e. holds no UART
  * lock and is idling. After this returns ESP_OK the caller owns the bus
