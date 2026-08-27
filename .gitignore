@@ -30,3 +30,9 @@ __pycache__/
 
 # ESP-IDF Installation Manager (eim) local config — machine-specific paths
 eim_config.toml
+
+# Desktop simulator build output (CMake/SDL)
+sim/build/
+
+# macOS Finder metadata
+.DS_Store
