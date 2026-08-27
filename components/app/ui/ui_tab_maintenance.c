@@ -19,6 +19,7 @@
 #include "freertos/task.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static const char *TAG = "ui_tab_maintenance";
 
@@ -58,6 +59,7 @@ static void detail_reading  (lv_obj_t *p);
 static void detail_switches (lv_obj_t *p);
 static void detail_role     (lv_obj_t *p);
 static void detail_bus      (lv_obj_t *p);
+static void detail_leds     (lv_obj_t *p);
 static void detail_theme    (lv_obj_t *p);
 static void detail_display  (lv_obj_t *p);
 static void detail_cloud    (lv_obj_t *p);
@@ -77,6 +79,7 @@ static const mt_entry_t s_entries[] = {
     { LV_SYMBOL_POWER,    "Switches",       detail_switches },
     { LV_SYMBOL_HOME,     "HMI Role",       detail_role     },
     { LV_SYMBOL_WIFI,     "Bus Setup",      detail_bus      },
+    { LV_SYMBOL_CHARGE,   "LED Strips",     detail_leds     },
     { LV_SYMBOL_IMAGE,    "Theme",          detail_theme    },
     { LV_SYMBOL_SETTINGS, "Display",        detail_display  },
     { LV_SYMBOL_UPLOAD,   "Cloud",          detail_cloud    },
@@ -889,6 +892,201 @@ static void detail_bus(lv_obj_t *p)
     }
 
     s_status_lbl = build_status_lbl(p, 20, 270);
+}
+
+/* =======================================================================
+ *  Detail: LED Strips (addressable strip lengths)
+ *
+ *  Installer setting, not a user preference: set once when the strip is
+ *  cut to fit the vehicle. Lives in Maintenance rather than next to the
+ *  colour wheel for that reason.
+ *
+ *  The count is STORED ON THE RGB SLAVE (its NVS), not here -- that
+ *  board is the one physically wired to the strip, so the value must
+ *  survive an HMI swap or the HMI being switched off. This screen is
+ *  just the touchscreen front-end for slave registers 12/13; see
+ *  slave_rgb_arduino.ino for the register map.
+ * ======================================================================= */
+
+#define RGB_SLAVE_ADDR        0x20
+#define RGB_HREG_ROOF_COUNT   12
+#define RGB_HREG_FLOOR_COUNT  13
+#define RGB_LED_COUNT_MAX     300     /* must match MAX_LEDS_PER_ZONE */
+
+static lv_obj_t *s_led_ta_roof;
+static lv_obj_t *s_led_ta_floor;
+
+/* Numeric keypad rather than the QWERTY board the other fields use. */
+static void on_led_ta_focused(lv_event_t *e)
+{
+    lv_obj_t *ta = lv_event_get_target(e);
+    if (s_kb) lv_keyboard_set_mode(s_kb, LV_KEYBOARD_MODE_NUMBER);
+    show_kb_for(ta);
+    lv_async_call(async_scroll_ta_into_view, ta);
+}
+
+static lv_obj_t *build_led_count_field(lv_obj_t *p, lv_coord_t x,
+                                       const char *caption)
+{
+    lv_obj_t *lbl = lv_label_create(p);
+    lv_label_set_text(lbl, caption);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl, hex(UI_COLOR_MUTED), 0);
+    lv_obj_set_style_text_letter_space(lbl, 2, 0);
+    lv_obj_set_pos(lbl, x, 108);
+
+    lv_obj_t *ta = lv_textarea_create(p);
+    lv_textarea_set_one_line(ta, true);
+    lv_textarea_set_max_length(ta, 3);
+    lv_textarea_set_accepted_chars(ta, "0123456789");
+    lv_obj_set_size(ta, 150, 46);
+    lv_obj_set_pos(ta, x, 132);
+    lv_obj_set_style_bg_color(ta, hex(UI_COLOR_SURFACE_LO), 0);
+    lv_obj_set_style_text_color(ta, hex(UI_COLOR_TEXT), 0);
+    lv_obj_set_style_border_color(ta, hex(UI_COLOR_STROKE), 0);
+    lv_obj_set_style_border_width(ta, 1, 0);
+    lv_obj_set_style_radius(ta, 10, 0);
+    lv_obj_set_style_text_font(ta, &lv_font_montserrat_20, 0);
+    lv_obj_add_event_cb(ta, on_led_ta_focused, LV_EVENT_FOCUSED, NULL);
+    return ta;
+}
+
+/* Read regs 12/13 back off the slave so the fields show what the strip
+ * is ACTUALLY set to, not what someone last typed here. */
+static void on_led_read_clicked(lv_event_t *e)
+{
+    (void)e;
+    if (hmi_role_is_secondary()) {
+        show_status("Only the PRIMARY can reach the RGB slave", UI_COLOR_HOT);
+        return;
+    }
+
+    show_status("Reading strip\xE2\x80\xA6", UI_COLOR_TAB);
+    lv_refr_now(NULL);
+
+    /* The poller owns the UART; take it so we don't block ~1 s per txn. */
+    modbus_task_pause(1500);
+    uint16_t regs[2] = { 0, 0 };
+    esp_err_t err = modbus_client_read_hregs(RGB_SLAVE_ADDR,
+                                             RGB_HREG_ROOF_COUNT, 2, regs);
+    modbus_task_resume();
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "LED count read failed: %s", esp_err_to_name(err));
+        show_status("No reply from RGB slave", UI_COLOR_HOT);
+        return;
+    }
+
+    char buf[8];
+    if (s_led_ta_roof) {
+        snprintf(buf, sizeof(buf), "%u", (unsigned)regs[0]);
+        lv_textarea_set_text(s_led_ta_roof, buf);
+    }
+    if (s_led_ta_floor) {
+        snprintf(buf, sizeof(buf), "%u", (unsigned)regs[1]);
+        lv_textarea_set_text(s_led_ta_floor, buf);
+    }
+    show_status("Read from strip", UI_COLOR_ON);
+}
+
+static void on_led_save_clicked(lv_event_t *e)
+{
+    (void)e;
+    if (hmi_role_is_secondary()) {
+        show_status("Only the PRIMARY can reach the RGB slave", UI_COLOR_HOT);
+        return;
+    }
+    if (!s_led_ta_roof || !s_led_ta_floor) return;
+
+    long roof  = atol(lv_textarea_get_text(s_led_ta_roof));
+    long floor = atol(lv_textarea_get_text(s_led_ta_floor));
+    if (roof  < 0 || roof  > RGB_LED_COUNT_MAX ||
+        floor < 0 || floor > RGB_LED_COUNT_MAX) {
+        show_status("Count must be 0-300", UI_COLOR_HOT);
+        return;
+    }
+
+    hide_kb();
+    show_status("Saving to strip\xE2\x80\xA6", UI_COLOR_TAB);
+    lv_refr_now(NULL);
+
+    uint16_t regs[2] = { (uint16_t)roof, (uint16_t)floor };
+    modbus_task_pause(1500);
+    esp_err_t err = modbus_client_write_hregs(RGB_SLAVE_ADDR,
+                                              RGB_HREG_ROOF_COUNT, 2, regs);
+    modbus_task_resume();
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "LED count write failed: %s", esp_err_to_name(err));
+        show_status("Write failed - check RGB slave", UI_COLOR_HOT);
+        return;
+    }
+    ESP_LOGI(TAG, "LED counts saved: roof=%ld floor=%ld", roof, floor);
+    show_status("Saved to strip", UI_COLOR_ON);
+}
+
+static void on_led_panel_deleted(lv_event_t *e)
+{
+    (void)e;
+    s_led_ta_roof  = NULL;
+    s_led_ta_floor = NULL;
+    /* Other screens expect the QWERTY board. */
+    if (s_kb) lv_keyboard_set_mode(s_kb, LV_KEYBOARD_MODE_TEXT_UPPER);
+}
+
+/* Deferred initial read (see detail_leds). Bails out if the user
+ * navigated away before this ran -- the fields are gone by then. */
+static void led_initial_read(void *arg)
+{
+    (void)arg;
+    if (!s_led_ta_roof || !s_led_ta_floor) return;
+    on_led_read_clicked(NULL);
+}
+
+static void detail_leds(lv_obj_t *p)
+{
+    detail_header(p, "LED Strips");
+
+    lv_obj_t *hint = lv_label_create(p);
+    lv_label_set_text(hint,
+        "How many LEDs are on each addressable strip. Set this once,\n"
+        "after the strip is cut to fit. Stored on the RGB controller\n"
+        "itself, so it survives a display swap.");
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(hint, hex(UI_COLOR_DIM), 0);
+    lv_obj_set_pos(hint, 20, 58);
+
+    s_led_ta_roof  = build_led_count_field(p, 20,  "ROOF");
+    s_led_ta_floor = build_led_count_field(p, 200, "FLOOR");
+
+    build_save_btn(p, 20, 196, LV_SYMBOL_SAVE "  Save", on_led_save_clicked);
+
+    lv_obj_t *rd = lv_btn_create(p);
+    lv_obj_set_size(rd, 160, 40);
+    lv_obj_set_pos(rd, 196, 196);
+    lv_obj_set_style_bg_color(rd, hex(UI_COLOR_SURFACE_LO), 0);
+    lv_obj_set_style_border_width(rd, 1, 0);
+    lv_obj_set_style_border_color(rd, hex(UI_COLOR_STROKE), 0);
+    lv_obj_set_style_radius(rd, 10, 0);
+    lv_obj_set_style_shadow_width(rd, 0, 0);
+    lv_obj_add_event_cb(rd, on_led_read_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *rl = lv_label_create(rd);
+    lv_label_set_text(rl, LV_SYMBOL_REFRESH "  Read");
+    lv_obj_set_style_text_font(rl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(rl, hex(UI_COLOR_TEXT), 0);
+    lv_obj_center(rl);
+
+    s_status_lbl = build_status_lbl(p, 20, 248);
+
+    lv_obj_add_event_cb(s_led_ta_roof, on_led_panel_deleted,
+                        LV_EVENT_DELETE, NULL);
+
+    /* Populate from the slave on open so the fields start from the
+     * installed truth rather than blank. Deferred via lv_async_call:
+     * the read pauses the Modbus poller and waits on a bus transaction
+     * (a few hundred ms), which would otherwise stall this builder and
+     * make the screen appear frozen before it had even painted. */
+    lv_async_call(led_initial_read, NULL);
 }
 
 /* =======================================================================

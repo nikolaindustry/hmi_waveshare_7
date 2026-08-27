@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>LED Strips screen — layout preview</title>
+<style>
+  /* Brown Leather palette, copied from ui_theme.c presets[0] */
+  :root{
+    --bg:#1A0E06; --shell:#2B1A0F; --surface:#3F2818; --surface-hi:#5A3D26;
+    --surface-lo:#1F130A; --stroke:#5E4025; --tab:#D4A574; --hot:#C2411A;
+    --on:#8FA455; --text:#F5E6CC; --muted:#B59A7A; --dim:#7A5E45;
+  }
+  body{background:#111;color:#ddd;font:14px -apple-system,Segoe UI,Roboto,sans-serif;
+       margin:0;padding:24px}
+  h1{font-size:16px;margin:0 0 4px}
+  p.sub{color:#888;margin:0 0 18px;font-size:13px}
+  .screen{position:relative;width:800px;height:368px;background:var(--bg);
+          border:1px solid #333;overflow:hidden}
+  .panel{position:absolute;background:var(--surface);border:1px solid var(--stroke);
+         border-radius:14px;box-sizing:border-box}
+  .row{position:absolute;width:204px;height:38px;border-radius:10px;
+       background:var(--surface-lo);box-sizing:border-box;
+       color:var(--muted);font-size:13px;line-height:38px;padding-left:16px}
+  .row.active{background:var(--surface-hi);color:var(--text)}
+  .row .bar{position:absolute;left:6px;top:6px;width:3px;height:26px;
+            border-radius:2px;background:var(--tab)}
+  .clip{position:absolute;left:16px;top:16px;width:220px;height:336px;
+        border-radius:14px;overflow:hidden}
+  .lbl{position:absolute;white-space:pre;line-height:1.22}
+  .ta{position:absolute;box-sizing:border-box;background:var(--surface-lo);
+      border:1px solid var(--stroke);border-radius:10px;color:var(--text);
+      font-size:20px;display:flex;align-items:center;padding-left:12px}
+  .btn{position:absolute;box-sizing:border-box;border-radius:10px;
+       display:flex;align-items:center;justify-content:center;
+       font-size:16px;color:var(--text)}
+  .btn.primary{background:var(--tab);color:#2B1A0F}
+  .btn.ghost{background:var(--surface-lo);border:1px solid var(--stroke)}
+  .note{margin-top:20px;max-width:800px;color:#aaa;font-size:13px;line-height:1.55}
+  .note b{color:#fff}
+  .warn{color:#e8b04b}
+  .ok{color:#8FA455}
+  code{background:#222;padding:1px 5px;border-radius:3px;color:#ddd}
+</style>
+</head>
+<body>
+
+<h1>Maintenance → LED Strips</h1>
+<p class="sub">Rendered 1:1 from the coordinates in <code>ui_tab_maintenance.c</code>.
+Geometry only — not an LVGL render, so fonts/spacing are approximate.</p>
+
+<div class="screen">
+
+  <!-- nav list: panel(content, 16,16, 220,336), pad 8, rows 204x38, pad_row 4 -->
+  <div class="panel" style="left:16px;top:16px;width:220px;height:336px"></div>
+  <div class="clip">
+    <div class="row"        style="left:8px;top:8px">Owner Info</div>
+    <div class="row"        style="left:8px;top:50px">Reading Lights</div>
+    <div class="row"        style="left:8px;top:92px">Switches</div>
+    <div class="row"        style="left:8px;top:134px">HMI Role</div>
+    <div class="row"        style="left:8px;top:176px">Bus Setup</div>
+    <div class="row active" style="left:8px;top:218px"><span class="bar"></span>LED Strips</div>
+    <div class="row"        style="left:8px;top:260px">Theme</div>
+    <div class="row"        style="left:8px;top:302px">Display</div>
+    <!-- Cloud (344) and About (386) fall past the 336px panel -> scroll -->
+  </div>
+
+  <!-- detail: panel(content, 248,16, 536,336) -->
+  <div class="panel" style="left:248px;top:16px;width:536px;height:336px">
+
+    <!-- detail_header: (20,16) montserrat_24 -->
+    <div class="lbl" style="left:20px;top:16px;font-size:24px;color:var(--text);
+         letter-spacing:2px">LED Strips</div>
+
+    <!-- hint: (20,58) montserrat_14, 3 lines -->
+    <div class="lbl" style="left:20px;top:58px;font-size:14px;color:var(--dim)">How many LEDs are on each addressable strip. Set this once,
+after the strip is cut to fit. Stored on the RGB controller
+itself, so it survives a display swap.</div>
+
+    <!-- captions (20,108) / (200,108) -->
+    <div class="lbl" style="left:20px;top:108px;font-size:14px;color:var(--muted);
+         letter-spacing:2px">ROOF</div>
+    <div class="lbl" style="left:200px;top:108px;font-size:14px;color:var(--muted);
+         letter-spacing:2px">FLOOR</div>
+
+    <!-- textareas (20,132) & (200,132), 150x46 -->
+    <div class="ta" style="left:20px;top:132px;width:150px;height:46px">60</div>
+    <div class="ta" style="left:200px;top:132px;width:150px;height:46px">45</div>
+
+    <!-- save btn (20,196) 160x40 ; read btn (196,196) 160x40 -->
+    <div class="btn primary" style="left:20px;top:196px;width:160px;height:40px">💾&nbsp; Save</div>
+    <div class="btn ghost"   style="left:196px;top:196px;width:160px;height:40px">⟳&nbsp; Read</div>
+
+    <!-- status (20,248) -->
+    <div class="lbl" style="left:20px;top:248px;font-size:14px;color:var(--on)">Read from strip</div>
+  </div>
+</div>
+
+<div class="note">
+  <p><b class="ok">Detail panel fits.</b> Widest row is Read ending at x=356 of 536;
+  lowest element is the status line at y=248 of 336. Comfortable margin all round —
+  no repeat of the off-screen WIRELESS card.</p>
+  <p><b class="warn">Nav list now overflows.</b> Ten entries at 38px + 4px gap = 416px
+  inside a 320px inner height, so only ~7.5 rows show and the list scrolls.
+  <b>LED Strips is 6th, so it is visible without scrolling</b>, but Cloud and About
+  now sit below the fold. The list was already made scrollable earlier for exactly
+  this reason, so it works — it just isn't all visible at once any more.</p>
+</div>
+
+</body>
+</html>
