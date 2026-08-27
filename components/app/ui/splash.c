@@ -4,8 +4,12 @@
 
 static const char *TAG = "splash";
 
-#define SPLASH_BG_HEX        0x121212
-#define SPLASH_TAGLINE_HEX   0x9E9E9E   /* muted grey for "powered by" line */
+/* White splash to match the brand artwork. The logo C array is baked
+ * against this background (converted with --no-alpha --bg ffffff), so
+ * changing SPLASH_BG_HEX alone would leave a white box around the logo
+ * -- regenerate the asset too if this ever changes. */
+#define SPLASH_BG_HEX        0xFFFFFF
+#define SPLASH_TAGLINE_HEX   0x6E6E6E   /* mid grey: readable on white */
 
 static splash_done_cb_t s_on_done = NULL;
 static lv_obj_t        *s_scr     = NULL;
@@ -43,22 +47,26 @@ void splash_show(uint32_t duration_ms, splash_done_cb_t on_done)
     lv_obj_t *scr = lv_scr_act();
     s_scr = scr;
 
-    /* Dark background */
+    /* White background */
     lv_obj_set_style_bg_color(scr, lv_color_hex(SPLASH_BG_HEX), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
     /* Centered logo */
     lv_obj_t *img = lv_img_create(scr);
-    lv_img_set_src(img, &logo_chintamani);
+    lv_img_set_src(img, &logo_splash);
     lv_obj_align(img, LV_ALIGN_CENTER, 0, -20);
 
     /* "powered by nikolaindustry" footer */
     lv_obj_t *tag = lv_label_create(scr);
-    lv_label_set_text(tag, "powered by nikolaindustry");
+    lv_label_set_text(tag, "powered by NIKOLAINDUSTRY & Smart Life Solution");
     lv_obj_set_style_text_color(tag, lv_color_hex(SPLASH_TAGLINE_HEX), 0);
-    lv_obj_set_style_text_font(tag, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_letter_space(tag, 2, 0);
+    /* montserrat_12 is enabled purely for this line (see
+     * CONFIG_LV_FONT_MONTSERRAT_12 in sdkconfig.defaults). Tighter
+     * letter spacing too -- the line is nearly twice as long now, so
+     * the old 16px/2px would crowd the 800px width. */
+    lv_obj_set_style_text_font(tag, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_letter_space(tag, 1, 0);
     lv_obj_align(tag, LV_ALIGN_BOTTOM_MID, 0, -30);
 
     /* Schedule the dismiss */

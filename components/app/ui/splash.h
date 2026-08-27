@@ -5,8 +5,13 @@
 extern "C" {
 #endif
 
-/* Chintamani logo image descriptor (generated C array) */
+/* Chintamani logo image descriptor (generated C array). Used by the
+ * shell's top bar; the splash uses logo_splash below. */
 extern const lv_img_dsc_t logo_chintamani;
+
+/* Full 4LANDER + CHINTAMANI brand mark, splash screen only. Baked
+ * against a white background (no alpha) -- see SPLASH_BG_HEX. */
+extern const lv_img_dsc_t logo_splash;
 
 /**
  * Show splash screen for @p duration_ms, then invoke @p on_done(target_scr).

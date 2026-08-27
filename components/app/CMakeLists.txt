@@ -3,6 +3,7 @@ idf_component_register(
         "app.c"
         "ui/splash.c"
         "ui/logo_chintamani.c"
+        "ui/logo_splash.c"
         "ui/vent_img.c"
         "ui/car_hero_img.c"
         "ui/van_hero_img.c"
