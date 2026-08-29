@@ -36,3 +36,6 @@ sim/build/
 
 # macOS Finder metadata
 .DS_Store
+
+# Distributable firmware images (rebuild with: idf.py merge-bin)
+dist/*.bin
