@@ -4,6 +4,7 @@
 #include "tile_names.h"
 #include "ctrl_state.h"
 #include "hmi_role.h"
+#include "service_pin.h"
 #include "hmi_link.h"
 #include "bus_config.h"
 #include "img_nikola_logo.h"
@@ -71,19 +72,32 @@ typedef struct {
     const char     *icon;
     const char     *title;
     mt_detail_fn_t  build;
+    bool            service;   /* true = behind the service PIN */
 } mt_entry_t;
 
+/* `service` marks the sections that can take the vehicle out of
+ * service, so an end user cannot reach them. Everything else is
+ * cosmetic or per-customer (names, theme, brightness) and stays open.
+ *
+ *   HMI Role   changes master/secondary topology, drops the wireless
+ *              pairing, reboots the unit
+ *   Bus Setup  reprograms the baud rate of EVERY slave on the RS-485
+ *              bus -- gets it wrong and nothing on the bus talks
+ *   LED Strips writes strip lengths into the RGB slave; an installer
+ *              setting fixed at fitment
+ *   Cloud      device/user identity and "clear credentials"
+ */
 static const mt_entry_t s_entries[] = {
-    { LV_SYMBOL_EDIT,     "Owner Info",     detail_owner    },
-    { LV_SYMBOL_EYE_OPEN, "Reading Lights", detail_reading  },
-    { LV_SYMBOL_POWER,    "Switches",       detail_switches },
-    { LV_SYMBOL_HOME,     "HMI Role",       detail_role     },
-    { LV_SYMBOL_WIFI,     "Bus Setup",      detail_bus      },
-    { LV_SYMBOL_CHARGE,   "LED Strips",     detail_leds     },
-    { LV_SYMBOL_IMAGE,    "Theme",          detail_theme    },
-    { LV_SYMBOL_SETTINGS, "Display",        detail_display  },
-    { LV_SYMBOL_UPLOAD,   "Cloud",          detail_cloud    },
-    { LV_SYMBOL_BELL,     "About",          detail_about    },
+    { LV_SYMBOL_EDIT,     "Owner Info",     detail_owner,    false },
+    { LV_SYMBOL_EYE_OPEN, "Reading Lights", detail_reading,  false },
+    { LV_SYMBOL_POWER,    "Switches",       detail_switches, false },
+    { LV_SYMBOL_HOME,     "HMI Role",       detail_role,     true  },
+    { LV_SYMBOL_WIFI,     "Bus Setup",      detail_bus,      true  },
+    { LV_SYMBOL_CHARGE,   "LED Strips",     detail_leds,     true  },
+    { LV_SYMBOL_IMAGE,    "Theme",          detail_theme,    false },
+    { LV_SYMBOL_SETTINGS, "Display",        detail_display,  false },
+    { LV_SYMBOL_UPLOAD,   "Cloud",          detail_cloud,    true  },
+    { LV_SYMBOL_BELL,     "About",          detail_about,    false },
 };
 #define N_ENTRIES ((int)(sizeof(s_entries) / sizeof(s_entries[0])))
 
@@ -238,6 +252,115 @@ static void paint_list_row(int idx, bool active)
         hex(active ? UI_COLOR_TEXT : UI_COLOR_MUTED), 0);
 }
 
+/* ---------- service PIN gate ----------
+ * Unlock lasts for the current Maintenance visit (see
+ * ui_tab_maintenance_build, which clears it), so an installer types
+ * the PIN once and can move freely between locked sections, while the
+ * next person to open the tab starts locked again. */
+static bool       s_service_unlocked;
+static int        s_pin_target_idx = -1;   /* section to open once unlocked */
+static lv_obj_t  *s_pin_ta;
+static lv_obj_t  *s_pin_msg;
+
+static void switch_detail(int idx);
+
+static void on_pin_submit(lv_event_t *e)
+{
+    (void)e;
+    if (!s_pin_ta) return;
+    const char *entered = lv_textarea_get_text(s_pin_ta);
+
+    if (strcmp(entered, SERVICE_PIN) == 0) {
+        s_service_unlocked = true;
+        hide_kb();
+        ESP_LOGI(TAG, "service settings unlocked");
+        int target = s_pin_target_idx;
+        s_pin_target_idx = -1;
+        /* s_active still points at this locked entry, so clear it or
+         * switch_detail() would treat the jump as a no-op. */
+        s_active = -1;
+        switch_detail(target);
+        return;
+    }
+
+    ESP_LOGW(TAG, "service PIN rejected");
+    lv_textarea_set_text(s_pin_ta, "");
+    if (s_pin_msg) {
+        lv_label_set_text(s_pin_msg, "Incorrect PIN");
+        lv_obj_set_style_text_color(s_pin_msg, hex(UI_COLOR_HOT), 0);
+    }
+}
+
+static void on_pin_ta_focused(lv_event_t *e)
+{
+    lv_obj_t *ta = lv_event_get_target(e);
+    if (s_kb) lv_keyboard_set_mode(s_kb, LV_KEYBOARD_MODE_NUMBER);
+    show_kb_for(ta);
+}
+
+static void on_pin_panel_deleted(lv_event_t *e)
+{
+    (void)e;
+    s_pin_ta  = NULL;
+    s_pin_msg = NULL;
+    /* Other screens expect the QWERTY board back. */
+    if (s_kb) lv_keyboard_set_mode(s_kb, LV_KEYBOARD_MODE_TEXT_UPPER);
+}
+
+/* Shown in place of a locked section until the PIN is entered. */
+static void detail_locked(lv_obj_t *p, int target_idx)
+{
+    s_pin_target_idx = target_idx;
+
+    detail_header(p, "Service Locked");
+
+    lv_obj_t *desc = lv_label_create(p);
+    lv_label_set_text(desc,
+        "These are installer settings. Changing them can take the\n"
+        "vehicle's controls offline, so they are PIN protected.\n"
+        "Contact your installer if you need access.");
+    lv_obj_set_style_text_font(desc, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(desc, hex(UI_COLOR_DIM), 0);
+    lv_obj_set_pos(desc, 20, 58);
+
+    lv_obj_t *lbl = lv_label_create(p);
+    lv_label_set_text(lbl, "SERVICE PIN");
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl, hex(UI_COLOR_MUTED), 0);
+    lv_obj_set_style_text_letter_space(lbl, 2, 0);
+    lv_obj_set_pos(lbl, 20, 126);
+
+    s_pin_ta = lv_textarea_create(p);
+    lv_textarea_set_one_line(s_pin_ta, true);
+    lv_textarea_set_password_mode(s_pin_ta, true);
+    lv_textarea_set_max_length(s_pin_ta, 8);
+    lv_textarea_set_accepted_chars(s_pin_ta, "0123456789");
+    lv_obj_set_size(s_pin_ta, 200, 46);
+    lv_obj_set_pos(s_pin_ta, 20, 150);
+    lv_obj_set_style_bg_color(s_pin_ta, hex(UI_COLOR_SURFACE_LO), 0);
+    lv_obj_set_style_text_color(s_pin_ta, hex(UI_COLOR_TEXT), 0);
+    lv_obj_set_style_border_color(s_pin_ta, hex(UI_COLOR_STROKE), 0);
+    lv_obj_set_style_border_width(s_pin_ta, 1, 0);
+    lv_obj_set_style_radius(s_pin_ta, 10, 0);
+    lv_obj_set_style_text_font(s_pin_ta, &lv_font_montserrat_20, 0);
+    lv_obj_add_event_cb(s_pin_ta, on_pin_ta_focused, LV_EVENT_FOCUSED, NULL);
+    lv_obj_add_event_cb(s_pin_ta, on_pin_panel_deleted, LV_EVENT_DELETE, NULL);
+
+    build_save_btn(p, 236, 152, LV_SYMBOL_OK "  Unlock", on_pin_submit);
+
+    s_pin_msg = lv_label_create(p);
+    lv_label_set_text(s_pin_msg, "");
+    lv_obj_set_style_text_font(s_pin_msg, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_pin_msg, hex(UI_COLOR_MUTED), 0);
+    lv_obj_set_pos(s_pin_msg, 20, 210);
+
+    /* Bring the keypad up immediately -- whoever opened this screen
+     * either knows the PIN or is about to find out they don't. */
+    lv_obj_add_state(s_pin_ta, LV_STATE_FOCUSED);
+    if (s_kb) lv_keyboard_set_mode(s_kb, LV_KEYBOARD_MODE_NUMBER);
+    show_kb_for(s_pin_ta);
+}
+
 static void switch_detail(int idx)
 {
     if (idx < 0 || idx >= N_ENTRIES || idx == s_active) return;
@@ -256,6 +379,13 @@ static void switch_detail(int idx)
     for (int i = 0; i < TILE_MAX; i++) s_ta_tiles[i] = NULL;
 
     lv_obj_clean(s_detail);
+
+    if (s_entries[idx].service && !s_service_unlocked) {
+        detail_locked(s_detail, idx);
+        ESP_LOGI(TAG, "maintenance detail -> %s (LOCKED)", s_entries[idx].title);
+        return;
+    }
+
     if (s_entries[idx].build) s_entries[idx].build(s_detail);
     ESP_LOGI(TAG, "maintenance detail -> %s", s_entries[idx].title);
 }
@@ -310,7 +440,16 @@ static void build_nav_list(lv_obj_t *content)
         lv_obj_align(icon, LV_ALIGN_LEFT_MID, 20, 0);
 
         lv_obj_t *title = lv_label_create(row);
-        lv_label_set_text(title, s_entries[i].title);
+        /* Prefix protected rows with a padlock so it is obvious
+         * which sections need the service PIN. */
+        if (s_entries[i].service) {
+            static char locked_title[N_ENTRIES][32];
+            snprintf(locked_title[i], sizeof(locked_title[i]),
+                     LV_SYMBOL_CLOSE "  %s", s_entries[i].title);
+            lv_label_set_text(title, locked_title[i]);
+        } else {
+            lv_label_set_text(title, s_entries[i].title);
+        }
         lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(title, hex(UI_COLOR_MUTED), 0);
         lv_obj_align(title, LV_ALIGN_LEFT_MID, 46, 0);
@@ -1753,6 +1892,13 @@ void ui_tab_maintenance_build(lv_obj_t *content)
     s_bri_slider    = NULL;
     s_bri_value_lbl = NULL;
     for (int i = 0; i < TILE_MAX; i++) s_ta_tiles[i] = NULL;
+
+    /* Re-lock on every entry to the tab: an installer who unlocked and
+     * walked away must not leave the service screens open behind them. */
+    s_service_unlocked = false;
+    s_pin_target_idx   = -1;
+    s_pin_ta           = NULL;
+    s_pin_msg          = NULL;
 
     build_nav_list(content);
     s_detail = panel(content, 248, 16, 536, 336);
