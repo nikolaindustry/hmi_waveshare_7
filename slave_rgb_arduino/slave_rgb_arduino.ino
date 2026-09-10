@@ -36,32 +36,24 @@
  *     Reg 12 ROOF  LED count  0..MAX_LEDS_PER_ZONE
  *     Reg 13 FLOOR LED count  0..MAX_LEDS_PER_ZONE
  *
- *  LED COUNT — set at runtime, no reflash needed
+ *  LED COUNT — owned by THIS board
  *  -----------------------------------------------
- *  How many LEDs are actually wired isn't known until the strip is
- *  cut to fit the vehicle, so it is NOT a compile-time constant.
- *  Two ways to set it, and both persist to flash (Preferences/NVS):
+ *  How many LEDs are wired isn't known until the strip is cut to fit
+ *  the vehicle, so it is not a compile-time constant. It is set here,
+ *  over serial, and persists to flash (Preferences/NVS):
  *
- *   1. FROM THE HMI (normal path). The installer sets the length on
- *      the touchscreen while fitting the strip — no laptop needed.
- *      The HMI writes regs 12/13; this slave applies and saves them.
- *      Storage lives HERE, on the board wired to the strip, so the
- *      count survives an HMI swap or the HMI being switched off.
+ *      ROOF 1000    <Enter>   -- set roof chain to 1000 LEDs
+ *      FLOOR 1000   <Enter>   -- set floor chain to 1000 LEDs
+ *      COUNTS       <Enter>   -- print current counts
  *
- *   2. FROM SERIAL (bench / debug fallback). Open the Arduino Serial
- *      Monitor at 115200 baud and type:
- *
- *          ROOF 45      <Enter>   -- set roof run to 45 LEDs
- *          FLOOR 60     <Enter>   -- set floor run to 60 LEDs
- *          COUNTS       <Enter>   -- print current counts
- *
- *  NOTE the count is the length of ONE run. Each zone has three
- *  mirrored runs (see wiring), so a roof count of 300 lights 900 LEDs.
- *
- *  Either path updates regs 12/13, so the HMI always reads back the
- *  truth via FC 0x03. MAX_LEDS_PER_ZONE below is just the compiled
- *  buffer's ceiling (RAM), not the active count — set generously
- *  (300 = 5 m of 60/m strip) so you never hit it in practice.
+ *  The SLAVE IS AUTHORITATIVE. Regs 12/13 report the current lengths
+ *  so the HMI can display them, but a write from the bus is rejected
+ *  and the real value is put straight back — see enforce_led_counts().
+ *  This board is the one physically wired to the strip, so it is the
+ *  only thing that can know the true length; letting a screen elsewhere
+ *  overwrite it just risks truncating the strip to whatever limit that
+ *  screen happens to have. It also means the length survives an HMI
+ *  swap or the HMI being switched off entirely.
  *
  *  Hardware wiring
  *  ---------------
@@ -73,22 +65,20 @@
  *     GND      ──►    GND
  *     HW-097 A/B ──► bus A/B (same pair as relay board)
  *
- *     ESP32           LED strips -- 3 MIRRORED runs per zone
- *     GPIO 13  ──►    ROOF  run 1 DATA-IN
- *     GPIO 14  ──►    ROOF  run 2 DATA-IN
- *     GPIO 27  ──►    ROOF  run 3 DATA-IN
- *     GPIO 25  ──►    FLOOR run 1 DATA-IN
- *     GPIO 26  ──►    FLOOR run 2 DATA-IN
- *     GPIO 33  ──►    FLOOR run 3 DATA-IN
+ *     ESP32           LED strips -- one chain per zone
+ *     GPIO 32  ──►    ROOF  strip DATA-IN
+ *     GPIO 23  ──►    FLOOR strip DATA-IN
  *
- *     All three runs in a zone show the SAME thing, so a zone can be
- *     3 x <count> LEDs long in total. Set <count> to the length of ONE
- *     run, not the total.
- *     5V/GND   ──►    strip power (size the PSU for LED count x ~60 mA
- *                     peak per pixel at full white; add a 300-500 ohm
- *                     resistor in series with each DATA line and a
- *                     large (>=1000 uF) cap across strip 5V/GND at the
- *                     strip's input end -- standard WS2812B practice)
+ *     Up to 1000 individually addressable pixels per zone (2000 total).
+ *
+ *     5V/GND   ──►    strip power. Size the supply for the STRIP, not
+ *                     the controller: ~60 mA per pixel at full white,
+ *                     so 2000 pixels is ~100 A worst case. Real scenes
+ *                     draw far less, but a 1000-pixel run MUST have
+ *                     power injected every 1-2 m or the far end browns
+ *                     out and drifts colour. Also: 300-500 ohm in
+ *                     series with each DATA line, and a >=1000 uF cap
+ *                     across 5V/GND at the strip's input end.
  *
  *  Libraries (Arduino Library Manager)
  *  ------------------------------------
@@ -102,18 +92,13 @@
 #include <FastLED.h>
 #include <Preferences.h>
 
-/* ---- LED data pins: 3 MIRRORED outputs per zone ----
+/* ---- LED data pins: one output per zone ----
  *
- * Each zone drives three separate physical runs that all receive the
- * SAME data, so one zone can light 3 x <count> LEDs while the Modbus
- * protocol and the HMI still deal with a single count (the length of
- * ONE run). Splitting the load this way also keeps each chain short,
- * which means a faster refresh and far less voltage droop than one long
- * daisy-chain would have.
- *
- * Because the runs are mirrors, they show the SAME thing -- three
- * identical rainbows rather than one rainbow spread over all of them.
- * For static colour, which is the normal case, they are indivisible.
+ * One data pin per zone, each driving one continuous chain of up to
+ * MAX_LEDS_PER_ZONE addressable pixels. (An earlier revision mirrored
+ * each zone across three pins to multiply the LED count while keeping
+ * chains short; that is no longer needed now the per-zone ceiling is
+ * high enough to address every pixel individually.)
  *
  * NOT GPIO12: that is the MTDI strapping pin, sampled at reset to pick
  * the flash voltage. If anything on the strip side (a level shifter's
@@ -123,12 +108,8 @@
  *
  * These must be compile-time constants -- FastLED takes the pin as a
  * template parameter, so they cannot live in a runtime array. */
-#define PIN_ROOF_A     13
-#define PIN_ROOF_B     14
-#define PIN_ROOF_C     27
-#define PIN_FLOOR_A    25
-#define PIN_FLOOR_B    26
-#define PIN_FLOOR_C    33
+#define PIN_ROOF_DATA    32
+#define PIN_FLOOR_DATA   23
 
 static const int PIN_RS485_RX    = 16;
 static const int PIN_RS485_TX    = 17;
@@ -138,9 +119,27 @@ static const int PIN_RS485_DE_RE = 4;
 static const uint8_t  SLAVE_ID   = 0x20;
 static const uint32_t RS485_BAUD = 115200;
 
+/* Must absorb everything that can arrive while FastLED.show() blocks
+ * the loop -- see the note at Serial2.setRxBufferSize(). */
+#define RS485_RX_BUF_BYTES 2048
+
 /* ---- LED buffer ceiling (RAM only -- actual driven count is
- * runtime-configurable, see LED COUNT section above). ---- */
-#define MAX_LEDS_PER_ZONE  300
+ * runtime-configurable, see LED COUNT section above).
+ *
+ * 1000 per zone = 2000 pixels total, 6 KB of CRGB buffers -- trivial
+ * against the ESP32's 320 KB. The real costs of going this long are
+ * NOT memory:
+ *
+ *   Refresh: WS2812B clocks out at ~30 us/pixel, so 1000 pixels is
+ *   ~30 ms per show(). Both zones stream in parallel over RMT, so it
+ *   is ~30 ms total, not 60 -- but that is still 30 ms during which
+ *   show() blocks. See RS485_RX_BUF_BYTES below for why that matters.
+ *
+ *   Power: 2000 pixels at full white is on the order of 100 A. Real
+ *   scenes draw far less, but the supply and injection points must be
+ *   sized for the strip, not for the controller. Inject every 1-2 m;
+ *   a single feed at one end will brown out badly down the run. */
+#define MAX_LEDS_PER_ZONE  1000
 #define DEFAULT_LED_COUNT  30
 #define LED_CHIPSET        WS2812B
 
@@ -360,9 +359,8 @@ static void led_count_set(rgb_zone_t *z, long n) {
     fill_solid(z->leds, MAX_LEDS_PER_ZONE, CRGB::Black);
 
     prefs.putUShort(z->nvs_key, z->count);
-    /* Mirror into the holding register so the HMI reads back the truth
-     * (FC 0x03) whichever way the count was changed -- touchscreen or
-     * the serial CLI below. Also keeps sync_led_counts() a no-op. */
+    /* Publish into the holding register so the HMI reads back the truth
+     * on its next FC 0x03, and so enforce_led_counts() sees no drift. */
     mb.Hreg(z->count_reg, z->count);
 
     Serial.print(F("[rgb-slave] "));
@@ -372,23 +370,32 @@ static void led_count_set(rgb_zone_t *z, long n) {
     Serial.println(F(" (saved)"));
 }
 
-/* Poll the strip-length registers for changes pushed by the HMI.
+/* Keep the strip-length registers pinned to what THIS board knows.
  *
- * Done here rather than inside on_hreg_set() because that callback
- * fires on EVERY write -- including the HMI re-sending an unchanged
- * value -- and writing flash each time would wear out NVS. Comparing
- * against the live count means flash is only touched when the number
- * actually changes. */
-static void sync_led_counts(void) {
+ * The slave is authoritative for strip length: it is the device
+ * physically wired to the strip, so it is the only one that can know
+ * how long the strip is. The HMI may READ regs 12/13 to display the
+ * value, but a write from the bus is rejected -- otherwise anyone
+ * opening the HMI's LED Strips screen and pressing Save would push
+ * that screen's own (lower) limit over the real length and truncate
+ * the strip.
+ *
+ * Change the length here, on the board, with ROOF/FLOOR over serial. */
+static void enforce_led_counts(void) {
     for (int i = 0; i < ZONE_N; i++) {
         rgb_zone_t *z = &s_zones[i];
-        uint16_t want = mb.Hreg(z->count_reg);
-        if (want != z->count) {
-            Serial.print(F("[rgb-slave] HMI set "));
+        uint16_t reg = mb.Hreg(z->count_reg);
+        if (reg != z->count) {
+            /* Something on the bus wrote a different length. Reject it
+             * and put the real value back, so the HMI also reads the
+             * truth on its next FC 0x03. */
+            Serial.print(F("[rgb-slave] ignored bus write of "));
+            Serial.print(reg);
+            Serial.print(F(" to "));
             Serial.print(z->name);
-            Serial.print(F(" -> "));
-            Serial.println(want);
-            led_count_set(z, want);
+            Serial.print(F(" count; keeping "));
+            Serial.println(z->count);
+            mb.Hreg(z->count_reg, z->count);
         }
     }
 }
@@ -469,17 +476,22 @@ void setup(void) {
      * The ESP32 has 8 RMT channels and these 6 outputs take one each,
      * driven concurrently -- so show() costs about the same as a single
      * strip, not six times as much. */
-    FastLED.addLeds<LED_CHIPSET, PIN_ROOF_A,  LED_COLOR_ORDER>(s_buf_roof,  MAX_LEDS_PER_ZONE);
-    FastLED.addLeds<LED_CHIPSET, PIN_ROOF_B,  LED_COLOR_ORDER>(s_buf_roof,  MAX_LEDS_PER_ZONE);
-    FastLED.addLeds<LED_CHIPSET, PIN_ROOF_C,  LED_COLOR_ORDER>(s_buf_roof,  MAX_LEDS_PER_ZONE);
-    FastLED.addLeds<LED_CHIPSET, PIN_FLOOR_A, LED_COLOR_ORDER>(s_buf_floor, MAX_LEDS_PER_ZONE);
-    FastLED.addLeds<LED_CHIPSET, PIN_FLOOR_B, LED_COLOR_ORDER>(s_buf_floor, MAX_LEDS_PER_ZONE);
-    FastLED.addLeds<LED_CHIPSET, PIN_FLOOR_C, LED_COLOR_ORDER>(s_buf_floor, MAX_LEDS_PER_ZONE);
+    FastLED.addLeds<LED_CHIPSET, PIN_ROOF_DATA,  LED_COLOR_ORDER>(s_buf_roof,  MAX_LEDS_PER_ZONE);
+    FastLED.addLeds<LED_CHIPSET, PIN_FLOOR_DATA, LED_COLOR_ORDER>(s_buf_floor, MAX_LEDS_PER_ZONE);
     fill_solid(s_buf_roof,  MAX_LEDS_PER_ZONE, CRGB::Black);
     fill_solid(s_buf_floor, MAX_LEDS_PER_ZONE, CRGB::Black);
     FastLED.show();
 
     /* RS-485 UART. */
+    /* Enlarge the RX FIFO before opening the port.
+     *
+     * FastLED.show() blocks while it clocks pixels out -- ~30 ms for a
+     * 1000-pixel chain. At 115200 baud that is room for ~345 bytes of
+     * Modbus traffic to arrive with nothing servicing the UART, and the
+     * default 256-byte buffer would overrun and drop frames from the
+     * HMI. 2 KB gives comfortable headroom even if a future strip is
+     * longer still. Must be called BEFORE begin() to take effect. */
+    Serial2.setRxBufferSize(RS485_RX_BUF_BYTES);
     Serial2.begin(RS485_BAUD, SERIAL_8N1, PIN_RS485_RX, PIN_RS485_TX);
     mb.begin(&Serial2, PIN_RS485_DE_RE);
     mb.setBaudrate(RS485_BAUD);
@@ -517,7 +529,7 @@ void setup(void) {
 
 void loop(void) {
     mb.task();                 /* service RTU state machine */
-    sync_led_counts();         /* strip lengths pushed from the HMI     */
+    enforce_led_counts();      /* slave owns the strip length            */
     serial_cli_poll();         /* ROOF/FLOOR/COUNTS commands over USB   */
 
     bool dirty = false;
