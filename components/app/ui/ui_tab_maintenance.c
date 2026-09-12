@@ -111,6 +111,8 @@ static lv_obj_t  *s_status_lbl;
 static lv_timer_t *s_status_timer;
 static lv_obj_t  *s_ta_owner;
 static lv_obj_t  *s_ta_tiles[TILE_MAX];
+static lv_obj_t  *s_cb_home[TILE_MAX];   /* "HOME" checkbox per row */
+static lv_obj_t  *s_cb_hold[TILE_MAX];   /* "HOLD" checkbox per row */
 static int        s_ta_tile_kind;
 static int        s_ta_tile_count;
 static lv_obj_t  *s_bri_slider;      /* Display -> brightness slider */
@@ -376,7 +378,11 @@ static void switch_detail(int idx)
     s_ta_owner   = NULL;
     s_bri_slider    = NULL;
     s_bri_value_lbl = NULL;
-    for (int i = 0; i < TILE_MAX; i++) s_ta_tiles[i] = NULL;
+    for (int i = 0; i < TILE_MAX; i++) {
+        s_ta_tiles[i] = NULL;
+        s_cb_home[i]  = NULL;
+        s_cb_hold[i]  = NULL;
+    }
 
     lv_obj_clean(s_detail);
 
@@ -519,6 +525,23 @@ static void detail_owner(lv_obj_t *p)
  *  Detail: Reading Lights / Switches (tile rename)
  * ======================================================================= */
 
+/* Small square checkbox sized for a finger, not a mouse. */
+static lv_obj_t *row_checkbox(lv_obj_t *row, const char *text, int x, bool checked)
+{
+    lv_obj_t *cb = lv_checkbox_create(row);
+    lv_checkbox_set_text(cb, text);
+    lv_obj_set_style_text_font(cb, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(cb, hex(UI_COLOR_MUTED), 0);
+    lv_obj_set_style_pad_column(cb, 4, 0);
+    lv_obj_set_style_bg_color(cb, hex(UI_COLOR_SURFACE_LO), LV_PART_INDICATOR);
+    lv_obj_set_style_border_color(cb, hex(UI_COLOR_STROKE), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(cb, hex(UI_COLOR_TAB),
+                              LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_align(cb, LV_ALIGN_LEFT_MID, x, 0);
+    if (checked) lv_obj_add_state(cb, LV_STATE_CHECKED);
+    return cb;
+}
+
 static lv_obj_t *build_rename_row(lv_obj_t *parent,
                                   const char *fixed_label,
                                   const char *current_name)
@@ -539,7 +562,9 @@ static lv_obj_t *build_rename_row(lv_obj_t *parent,
     lv_textarea_set_one_line(ta, true);
     lv_textarea_set_max_length(ta, CTRL_NAME_MAX - 1);
     lv_textarea_set_text(ta, current_name ? current_name : "");
-    lv_obj_set_size(ta, 320, 36);
+    /* List inner width is 480 px. Label 6..66, HOME 72..146,
+     * HOLD 152..226, textarea 246..474. */
+    lv_obj_set_size(ta, 228, 36);
     lv_obj_align(ta, LV_ALIGN_RIGHT_MID, -6, 0);
     lv_obj_set_style_bg_color(ta, hex(UI_COLOR_SURFACE_LO), 0);
     lv_obj_set_style_text_color(ta, hex(UI_COLOR_TEXT), 0);
@@ -549,6 +574,20 @@ static lv_obj_t *build_rename_row(lv_obj_t *parent,
     lv_obj_set_style_text_font(ta, &lv_font_montserrat_16, 0);
     lv_obj_add_event_cb(ta, on_ta_focused, LV_EVENT_FOCUSED, NULL);
     return ta;
+}
+
+/* Home buttons are capped by the width of the Overview greeting column
+ * (CTRL_HOME_MAX). Count what the OTHER group already claims so the two
+ * screens cannot between them overshoot the row. */
+static int home_claimed_by_other_group(void)
+{
+    int n = 0;
+    ctrl_toggle_t *arr = (s_ta_tile_kind == TILE_KIND_SWITCH)
+                             ? ctrl_reading_lights(&n)
+                             : ctrl_switches(&n);
+    int c = 0;
+    for (int i = 0; i < n; i++) if (arr[i].home) c++;
+    return c;
 }
 
 static void on_save_tiles(lv_event_t *e)
@@ -562,6 +601,34 @@ static void on_save_tiles(lv_event_t *e)
         esp_err_t err = tile_names_set(s_ta_tile_kind, i, txt);
         if (err != ESP_OK) any_err = true;
     }
+
+    uint16_t mom = 0, home = 0;
+    int want_home = 0;
+    for (int i = 0; i < s_ta_tile_count; i++) {
+        if (s_cb_hold[i] && lv_obj_has_state(s_cb_hold[i], LV_STATE_CHECKED)) {
+            mom |= (uint16_t)(1u << i);
+        }
+        if (s_cb_home[i] && lv_obj_has_state(s_cb_home[i], LV_STATE_CHECKED)) {
+            home |= (uint16_t)(1u << i);
+            want_home++;
+        }
+    }
+
+    /* Refuse the whole flag save rather than silently dropping the
+     * tiles that would not fit -- the installer needs to know which
+     * boxes to uncheck, not discover one missing later. */
+    int budget = CTRL_HOME_MAX - home_claimed_by_other_group();
+    if (want_home > budget) {
+        hide_kb();
+        char msg[64];
+        snprintf(msg, sizeof(msg),
+                 "Names saved. Home: pick at most %d here", budget);
+        show_status(msg, UI_COLOR_HOT);
+        return;
+    }
+
+    if (tile_flags_set(s_ta_tile_kind, mom, home) != ESP_OK) any_err = true;
+
     hide_kb();
     show_status(any_err ? "Some items failed" : "Saved",
                 any_err ? UI_COLOR_HOT : UI_COLOR_ON);
@@ -578,7 +645,9 @@ static void build_rename_detail(lv_obj_t *p, const char *title,
 
     lv_obj_t *list = lv_obj_create(p);
     lv_obj_remove_style_all(list);
-    lv_obj_set_size(list, 496, 200);
+    /* Detail panel is 536x336. List 60..228, Save 238..278, hint
+     * 290..318 -- the two-line hint is what shrank the list from 200. */
+    lv_obj_set_size(list, 496, 168);
     lv_obj_set_pos(list, 20, 60);
     lv_obj_set_style_bg_color(list, hex(UI_COLOR_SURFACE_LO), 0);
     lv_obj_set_style_bg_opa(list, LV_OPA_COVER, 0);
@@ -595,10 +664,21 @@ static void build_rename_detail(lv_obj_t *p, const char *title,
         char fixed[24];
         snprintf(fixed, sizeof(fixed), "%s %d", row_prefix, i + 1);
         s_ta_tiles[i] = build_rename_row(list, fixed, items[i].name);
+        lv_obj_t *row = lv_obj_get_parent(s_ta_tiles[i]);
+        s_cb_home[i] = row_checkbox(row, "HOME", 72,  items[i].home);
+        s_cb_hold[i] = row_checkbox(row, "HOLD", 152, items[i].momentary);
     }
 
-    build_save_btn(p, 20, 274, LV_SYMBOL_SAVE "  Save All", on_save_tiles);
-    s_status_lbl = build_status_lbl(p, 200, 284);
+    build_save_btn(p, 20, 238, LV_SYMBOL_SAVE "  Save All", on_save_tiles);
+    s_status_lbl = build_status_lbl(p, 200, 248);
+
+    lv_obj_t *hint = lv_label_create(p);
+    lv_label_set_text(hint,
+        "HOME = also show as a quick button on the home screen (max 4).\n"
+        "HOLD = push-to-on, release-to-off. Use for horn, pumps, motors.");
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(hint, hex(UI_COLOR_DIM), 0);
+    lv_obj_set_pos(hint, 20, 290);
 }
 
 static void detail_reading(lv_obj_t *p)
@@ -1869,7 +1949,11 @@ static void on_detail_deleted(lv_event_t *e)
     s_ta_owner   = NULL;
     s_bri_slider    = NULL;
     s_bri_value_lbl = NULL;
-    for (int i = 0; i < TILE_MAX; i++) s_ta_tiles[i] = NULL;
+    for (int i = 0; i < TILE_MAX; i++) {
+        s_ta_tiles[i] = NULL;
+        s_cb_home[i]  = NULL;
+        s_cb_hold[i]  = NULL;
+    }
     for (int i = 0; i < N_ENTRIES; i++) s_list_rows[i] = NULL;
     s_detail = NULL;
     s_active = -1;
@@ -1891,7 +1975,11 @@ void ui_tab_maintenance_build(lv_obj_t *content)
     s_ta_owner     = NULL;
     s_bri_slider    = NULL;
     s_bri_value_lbl = NULL;
-    for (int i = 0; i < TILE_MAX; i++) s_ta_tiles[i] = NULL;
+    for (int i = 0; i < TILE_MAX; i++) {
+        s_ta_tiles[i] = NULL;
+        s_cb_home[i]  = NULL;
+        s_cb_hold[i]  = NULL;
+    }
 
     /* Re-lock on every entry to the tab: an installer who unlocked and
      * walked away must not leave the service screens open behind them. */

@@ -2,6 +2,8 @@
 #include "ac_state.h"
 #include "lvgl.h"
 #include "nvs.h"
+#include "modbus_task.h"
+#include "hmi_role.h"
 #include "esp_log.h"
 #include <string.h>
 
@@ -209,7 +211,155 @@ void ctrl_state_init(void)
     s_seen = s_saved;
 }
 
+/* Defined further down with the rest of the momentary-hold code. */
+static lv_timer_t *s_hold_deadman;
+static void hold_deadman_cb(lv_timer_t *t);
+
 void ctrl_state_start_autosave(void)
 {
     lv_timer_create(ctrl_persist_tick, 1000, NULL);
+    /* Watches coils held down by a secondary over ESP-NOW. Harmless on
+     * a secondary (s_remote_coil stays unset there). */
+    if (!s_hold_deadman) {
+        s_hold_deadman = lv_timer_create(hold_deadman_cb, 100, NULL);
+    }
+}
+
+
+/* ------------------------------------------------------------------
+ *  Driving tiles
+ * ------------------------------------------------------------------ */
+
+void ctrl_toggle_drive(ctrl_toggle_t *item, bool want)
+{
+    if (!item) return;
+    if (item->coil != CTRL_COIL_NONE) {
+        /* Leave item->on alone until the relay board confirms on the
+         * next read-back; the caller paints from its own preview and
+         * the amber pending border shows the write is in flight. */
+        item->pending = true;
+        modbus_task_request(item->coil, want);
+    } else {
+        item->on = want;   /* unmapped tile -- UI-only */
+    }
+}
+
+/* ------------------------------------------------------------------
+ *  Momentary hold
+ *
+ *  One finger, one held tile. See ctrl_state.h for why a wireless
+ *  secondary needs a repeat + deadman rather than a plain on/off pair.
+ * ------------------------------------------------------------------ */
+
+static ctrl_toggle_t *s_hold_item;        /* locally held tile, if any  */
+static lv_timer_t    *s_hold_repeat;      /* secondary: re-assert timer */
+static uint16_t       s_remote_coil = CTRL_COIL_NONE;
+static uint32_t       s_remote_last_ms;
+
+static ctrl_toggle_t *find_by_coil(uint16_t coil)
+{
+    if (coil == CTRL_COIL_NONE) return NULL;
+    for (int k = 0; k < 2; k++) {
+        int n = 0;
+        ctrl_toggle_t *arr = (k == 0) ? ctrl_reading_lights(&n)
+                                      : ctrl_switches(&n);
+        for (int i = 0; i < n; i++) {
+            if (arr[i].coil == coil) return &arr[i];
+        }
+    }
+    return NULL;
+}
+
+static void hold_repeat_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_hold_item) ctrl_toggle_drive(s_hold_item, true);
+}
+
+void ctrl_momentary_hold_begin(ctrl_toggle_t *item)
+{
+    if (!item) return;
+    if (s_hold_item && s_hold_item != item) ctrl_momentary_hold_end();
+    if (s_hold_item == item) return;
+
+    s_hold_item  = item;
+    item->held   = true;
+    ctrl_toggle_drive(item, true);
+
+    /* Only a wireless/wired secondary needs the re-assert: its press
+     * travelled as an intent that may not have arrived. */
+    if (hmi_role_is_secondary() && !s_hold_repeat) {
+        s_hold_repeat = lv_timer_create(hold_repeat_cb,
+                                        CTRL_HOLD_REFRESH_MS, NULL);
+    }
+}
+
+void ctrl_momentary_hold_end(void)
+{
+    if (s_hold_repeat) {
+        lv_timer_del(s_hold_repeat);
+        s_hold_repeat = NULL;
+    }
+    if (!s_hold_item) return;
+    ctrl_toggle_t *it = s_hold_item;
+    s_hold_item = NULL;
+    it->held    = false;
+    ctrl_toggle_drive(it, false);
+}
+
+static void hold_deadman_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_remote_coil == CTRL_COIL_NONE) return;
+    uint32_t age = lv_tick_elaps(s_remote_last_ms);
+    if (age < CTRL_HOLD_DEADMAN_MS) return;
+
+    ctrl_toggle_t *it = find_by_coil(s_remote_coil);
+    ESP_LOGW(TAG, "momentary coil %u released: no refresh for %u ms",
+             (unsigned)s_remote_coil, (unsigned)age);
+    s_remote_coil = CTRL_COIL_NONE;
+    if (it) {
+        it->held = false;
+        ctrl_toggle_drive(it, false);
+    }
+}
+
+bool ctrl_momentary_remote(uint16_t coil, bool on)
+{
+    ctrl_toggle_t *it = find_by_coil(coil);
+    if (!it || !it->momentary) return false;   /* not ours -- normal path */
+
+    if (on) {
+        if (s_remote_coil != coil) {
+            /* A different coil was held; drop it before taking this one. */
+            ctrl_toggle_t *prev = find_by_coil(s_remote_coil);
+            if (prev) { prev->held = false; ctrl_toggle_drive(prev, false); }
+            s_remote_coil = coil;
+            it->held      = true;
+            ctrl_toggle_drive(it, true);
+        }
+        /* Refresh either way -- this is what keeps the deadman fed. */
+        s_remote_last_ms = lv_tick_get();
+    } else {
+        if (s_remote_coil == coil) s_remote_coil = CTRL_COIL_NONE;
+        it->held = false;
+        ctrl_toggle_drive(it, false);
+    }
+    return true;
+}
+
+void ctrl_momentary_release_all(void)
+{
+    ctrl_momentary_hold_end();
+    for (int k = 0; k < 2; k++) {
+        int n = 0;
+        ctrl_toggle_t *arr = (k == 0) ? ctrl_reading_lights(&n)
+                                      : ctrl_switches(&n);
+        for (int i = 0; i < n; i++) {
+            if (!arr[i].momentary || !arr[i].held) continue;
+            arr[i].held = false;
+            ESP_LOGW(TAG, "momentary \"%s\" released by cleanup", arr[i].name);
+            ctrl_toggle_drive(&arr[i], false);
+        }
+    }
 }

@@ -143,6 +143,11 @@ void hmi_sync_apply_intent(hmi_cmd_t cmd, uint16_t a0, uint16_t a1, uint16_t a2)
         case HMI_CMD_COIL_SET: {
             uint16_t coil = a0;
             bool     on   = a1 != 0;
+            /* A momentary coil goes through the deadman instead: the
+             * secondary re-asserts it while the finger is down, and the
+             * primary drops it if those refreshes stop. Without this a
+             * lost release packet would latch the relay on. */
+            if (ctrl_momentary_remote(coil, on)) break;
             /* Primary's normal path: mark pending and let modbus_task
              * queue the FC 0x05 write; the worker will update ctrl_state
              * when the slave acknowledges. */

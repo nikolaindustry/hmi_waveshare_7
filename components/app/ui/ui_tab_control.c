@@ -634,6 +634,9 @@ static bool tl_all_mapped_on(void)
     bool any = false;
     for (int i = 0; i < s_tl_count; i++) {
         if (s_tl_items[i].coil == CTRL_COIL_NONE) continue;
+        /* Momentary coils are off by definition when nobody is
+         * pressing them; counting them would pin the master to OFF. */
+        if (s_tl_items[i].momentary) continue;
         any = true;
         if (!s_tl_items[i].on) return false;
     }
@@ -686,6 +689,9 @@ static void tl_destroy_cb(lv_event_t *e)
     lv_obj_t *src = e ? lv_event_get_target(e) : NULL;
     ESP_LOGW(TAG, "TL destroy_cb fired src=%p (link_pill=%p bar?=N/A grid?) timer=%p items=%p",
              (void*)src, (void*)s_link_pill, (void*)s_tl_timer, (void*)s_tl_items);
+    /* A momentary coil must not survive the screen that was holding it
+     * down -- LVGL sends no RELEASED when the tile is destroyed. */
+    ctrl_momentary_release_all();
     if (s_tl_timer) {
         ESP_LOGW(TAG, "TL killing sync timer %p", (void*)s_tl_timer);
         lv_timer_del(s_tl_timer);
@@ -719,22 +725,48 @@ static void on_tile_click(lv_event_t *e)
     if (!s_tl_items || idx < 0 || idx >= s_tl_count) return;
     ctrl_toggle_t *item = &s_tl_items[idx];
 
+    /* Momentary tiles are driven by PRESSED/RELEASED below; a CLICKED
+     * would arrive after the release and latch the coil back on. */
+    if (item->momentary) return;
+
     /* Tapping the tile toggles it: pick the opposite of whatever the
      * user currently sees (preview while pending, confirmed otherwise). */
     bool current = item->pending ? s_tl_preview[idx] : item->on;
     bool want    = !current;
     s_tl_preview[idx] = want;
 
-    if (item->coil != CTRL_COIL_NONE) {
-        /* Leave item->on unchanged until the worker confirms; mark
-         * pending and enqueue. paint_tile_state() will use the preview
-         * while pending=true and the amber border indicates in-flight. */
-        item->pending = true;
-        modbus_task_request(item->coil, want);
-    } else {
-        /* Unmapped item (e.g. Switches tab) -- UI-only toggle. */
-        item->on = want;
-    }
+    ctrl_toggle_drive(item, want);
+    paint_tile_state(idx);
+}
+
+/* ---- momentary tiles: coil follows the finger -----------------------
+ *
+ * PRESSED energises, RELEASED de-energises. PRESS_LOST matters just as
+ * much: it is what LVGL sends when the finger slides off the tile
+ * without lifting, and without handling it the coil would stay on with
+ * nothing on screen holding it down. Both paths land in tile_release().
+ */
+static void tile_press(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (!s_tl_items || idx < 0 || idx >= s_tl_count) return;
+    ctrl_toggle_t *item = &s_tl_items[idx];
+    if (!item->momentary || item->held) return;
+
+    s_tl_preview[idx] = true;
+    ctrl_momentary_hold_begin(item);
+    paint_tile_state(idx);
+}
+
+static void tile_release(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (!s_tl_items || idx < 0 || idx >= s_tl_count) return;
+    ctrl_toggle_t *item = &s_tl_items[idx];
+    if (!item->momentary || !item->held) return;
+
+    s_tl_preview[idx] = false;
+    ctrl_momentary_hold_end();
     paint_tile_state(idx);
 }
 
@@ -750,10 +782,12 @@ static void on_master_change(lv_event_t *e)
     if (!s_tl_items) return;
     for (int i = 0; i < s_tl_count; i++) {
         if (s_tl_items[i].coil == CTRL_COIL_NONE) continue;
+        /* Never latch a momentary coil -- "All on" would leave a horn
+         * or a pump energised with nothing holding it. */
+        if (s_tl_items[i].momentary) continue;
         s_tl_preview[i] = want;
-        s_tl_items[i].pending = true;
         if (s_tl_tiles[i]) paint_tile_state(i);
-        modbus_task_request(s_tl_items[i].coil, want);
+        ctrl_toggle_drive(&s_tl_items[i], want);
     }
 }
 
@@ -876,6 +910,15 @@ static void build_toggle_list(lv_obj_t *p, const char *title,
         lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
         /* Tile index lives directly in user_data -- no alloc, no free. */
         lv_obj_add_event_cb(tile, on_tile_click, LV_EVENT_CLICKED,
+                            (void *)(intptr_t)i);
+        /* Registered for every tile, not just momentary ones: the flag
+         * can be changed from Maintenance while a tab is open, and the
+         * handlers themselves check item->momentary. */
+        lv_obj_add_event_cb(tile, tile_press,   LV_EVENT_PRESSED,
+                            (void *)(intptr_t)i);
+        lv_obj_add_event_cb(tile, tile_release, LV_EVENT_RELEASED,
+                            (void *)(intptr_t)i);
+        lv_obj_add_event_cb(tile, tile_release, LV_EVENT_PRESS_LOST,
                             (void *)(intptr_t)i);
         s_tl_tiles[i] = tile;
 
