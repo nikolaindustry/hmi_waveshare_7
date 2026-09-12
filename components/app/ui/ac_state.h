@@ -15,6 +15,11 @@ typedef enum {
 typedef struct {
     bool   power;           /* master on/off                 */
     bool   auto_mode;       /* AUTO button state             */
+    bool   fan_only;        /* true = blower only, never engage
+                             * the compressor clutch. Some vans
+                             * have no A/C compressor wired, or
+                             * the customer wants ventilation
+                             * without cooling.                */
     int    fan_level;       /* 1..5                          */
     int    temp_c;          /* 16..30                        */
     int    airflow_mask;    /* OR of ac_airflow_bit_t values */

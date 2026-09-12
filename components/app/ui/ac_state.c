@@ -3,6 +3,7 @@
 static ac_state_t s_state = {
     .power         = false,
     .auto_mode     = true,
+    .fan_only      = false,
     .fan_level     = 3,
     .temp_c        = 20,
     .airflow_mask  = AC_AIRFLOW_MID,

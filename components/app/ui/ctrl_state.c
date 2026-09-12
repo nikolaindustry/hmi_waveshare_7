@@ -1,4 +1,5 @@
 #include "ctrl_state.h"
+#include "ac_state.h"
 #include "lvgl.h"
 #include "nvs.h"
 #include "esp_log.h"
@@ -82,6 +83,10 @@ ctrl_toggle_t *ctrl_switches(int *out_count)
 
 #define CTRL_NVS_NS   "ctrl"
 #define CTRL_NVS_KEY  "zones"
+/* FAN ONLY lives under its own key rather than inside the zones blob:
+ * adding a field to that blob means bumping CTRL_BLOB_VER, which would
+ * discard the RGB settings already saved on every van in the field. */
+#define CTRL_NVS_FANONLY "ac_fanonly"
 #define CTRL_BLOB_VER 1
 
 typedef struct __attribute__((packed)) {
@@ -126,9 +131,32 @@ static void ctrl_apply(const ctrl_blob_t *b)
     s_star.intensity       = b->star_intensity > 100 ? 100 : b->star_intensity;
 }
 
+/* FAN ONLY is a commissioning choice (this van has no compressor on the
+ * relay board), not a daily control, so it must survive a power cycle.
+ * It is a single bool and never dragged like a slider, so it needs no
+ * debounce -- write it the moment it differs from what is stored. */
+static uint8_t s_saved_fan_only = 0xFF;   /* 0xFF = not loaded yet */
+
+static void persist_fan_only(void)
+{
+    uint8_t now = ac_state()->fan_only ? 1 : 0;
+    if (now == s_saved_fan_only) return;
+
+    nvs_handle_t h;
+    if (nvs_open(CTRL_NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    if (nvs_set_u8(h, CTRL_NVS_FANONLY, now) == ESP_OK &&
+        nvs_commit(h) == ESP_OK) {
+        s_saved_fan_only = now;
+        ESP_LOGI(TAG, "fan-only saved (%s)", now ? "on" : "off");
+    }
+    nvs_close(h);
+}
+
 static void ctrl_persist_tick(lv_timer_t *t)
 {
     (void)t;
+    persist_fan_only();
+
     ctrl_blob_t now;
     ctrl_snapshot(&now);
 
@@ -166,6 +194,12 @@ void ctrl_state_init(void)
         } else {
             ESP_LOGI(TAG, "no saved zone settings, using defaults");
         }
+        uint8_t fo = 0;
+        if (nvs_get_u8(h, CTRL_NVS_FANONLY, &fo) == ESP_OK) {
+            ac_state()->fan_only = (fo != 0);
+            ESP_LOGI(TAG, "restored fan-only (%s)", fo ? "on" : "off");
+        }
+        s_saved_fan_only = ac_state()->fan_only ? 1 : 0;
         nvs_close(h);
     }
 

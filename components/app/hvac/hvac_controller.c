@@ -189,6 +189,7 @@ static void publish_status(hvac_mode_t mode,
     uint16_t fc = step_to_coil(s_current_step);
     snap.fan_coil     = (fc == HVAC_COIL_UNUSED) ? -1 : (int)fc;
     snap.clutch_on    = s_clutch_on;
+    snap.fan_only     = ac_state()->fan_only;
     snap.clutch_coil  = (HVAC_CLUTCH_COIL == HVAC_COIL_UNUSED) ? -1 : (int)HVAC_CLUTCH_COIL;
     snap.cabin_valid  = cabin_valid;
     snap.cabin_c      = cabin_c;
@@ -305,11 +306,19 @@ static void hvac_tick(void)
         }
         /* MANUAL: user's fan slider drives the step. The clutch follows
          * the fan -- if any fan step is selected AND the master is ON,
-         * we try to engage cooling (still gated by the interlocks below).
-         * Users who want fan-only behaviour can set fan_level to 0 in
-         * the UI layer, or we can add an explicit clutch switch later. */
+         * we try to engage cooling (still gated by the interlocks below). */
         want_fan    = slider_to_step(st->fan_level, true);
         want_clutch = (want_fan != FAN_STEP_OFF);
+    }
+
+    /* ------ FAN ONLY veto ------
+     * Orthogonal to AUTO/MANUAL: the blower keeps doing whatever the
+     * active mode decided, but the compressor clutch never engages.
+     * This is the vans with no compressor on the relay board, and the
+     * customer who wants air moving without cooling. Applied after the
+     * mode decision so neither branch needs to know about it. */
+    if (st->fan_only) {
+        want_clutch = false;
     }
 
     /* Normalise against installed hardware (e.g. MAX requested but not wired). */
@@ -357,6 +366,9 @@ static void hvac_tick(void)
         apply_clutch(true);
     } else {
         if (s_clutch_on) apply_clutch(false);
+        /* Say *why* the compressor is idle, so the details panel does
+         * not look like a fault when it is a deliberate setting. */
+        if (st->fan_only) pub_wait = HVAC_WAIT_FAN_ONLY;
     }
 
     publish_status(pub_mode, pub_wait, pub_wait_ms,

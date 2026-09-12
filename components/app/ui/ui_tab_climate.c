@@ -19,6 +19,7 @@ static lv_color_t hex(uint32_t c) { return lv_color_hex(c); }
 static lv_obj_t *s_power_pill;
 static lv_obj_t *s_power_lbl;
 static lv_obj_t *s_auto_pill;
+static lv_obj_t *s_fanonly_pill;
 static lv_obj_t *s_fan_slider;
 static lv_obj_t *s_temp_slider;
 static lv_obj_t *s_temp_lbl;
@@ -59,6 +60,14 @@ static void refresh_auto(void)
     lv_obj_t *lbl = lv_obj_get_child(s_auto_pill, 0);
     lv_obj_set_style_text_color(lbl, st->auto_mode ? hex(0xFFFFFF) : hex(UI_COLOR_MUTED), 0);
 }
+static void refresh_fan_only(void)
+{
+    ac_state_t *st = ac_state();
+    lv_color_t bg = st->fan_only ? hex(UI_COLOR_TAB) : hex(UI_COLOR_SURFACE_HI);
+    lv_obj_set_style_bg_color(s_fanonly_pill, bg, 0);
+    lv_obj_t *lbl = lv_obj_get_child(s_fanonly_pill, 0);
+    lv_obj_set_style_text_color(lbl, st->fan_only ? hex(0xFFFFFF) : hex(UI_COLOR_MUTED), 0);
+}
 static void refresh_fan(void)
 {
     ac_state_t *st = ac_state();
@@ -78,7 +87,8 @@ static void refresh_temp(void)
 }
 static void refresh_all(void)
 {
-    refresh_power(); refresh_auto(); refresh_fan(); refresh_temp();
+    refresh_power(); refresh_auto(); refresh_fan_only();
+    refresh_fan(); refresh_temp();
 }
 
 /* ===== event handlers ===== */
@@ -106,6 +116,17 @@ static void on_auto(lv_event_t *e)
     ac_state()->auto_mode = !ac_state()->auto_mode;
     refresh_auto();
     ac_push_secondary(HMI_AC_FIELD_AUTO, ac_state()->auto_mode ? 1 : 0);
+}
+/* FAN ONLY: blower without the compressor. Independent of AUTO/MANUAL --
+ * the thermostat still drives fan speed in AUTO, it just never asks for
+ * cooling. Vans without a compressor on the relay board leave this ON. */
+static void on_fan_only(lv_event_t *e)
+{
+    (void)e;
+    ac_state()->fan_only = !ac_state()->fan_only;
+    refresh_fan_only();
+    ac_push_secondary(HMI_AC_FIELD_FAN_ONLY, ac_state()->fan_only ? 1 : 0);
+    ESP_LOGI(TAG, "fan-only -> %s", ac_state()->fan_only ? "ON" : "OFF");
 }
 static void on_fan_change(lv_event_t *e)
 {
@@ -270,6 +291,9 @@ static void cabin_tick(lv_timer_t *t)
         case HVAC_WAIT_PURGE:
             snprintf(line1, sizeof(line1), "MODE: %s | evap purge %ds", mode_s, secs);
             break;
+        case HVAC_WAIT_FAN_ONLY:
+            snprintf(line1, sizeof(line1), "MODE: %s | fan only", mode_s);
+            break;
         case HVAC_WAIT_NONE:
         default:
             snprintf(line1, sizeof(line1), "MODE: %s | running", mode_s);
@@ -297,7 +321,8 @@ static void cabin_tick(lv_timer_t *t)
     } else if (h.clutch_on) {
         snprintf(line3, sizeof(line3), "A/C: COOLING  (CH%d ON)", h.clutch_coil + 1);
     } else {
-        snprintf(line3, sizeof(line3), "A/C: idle  (CH%d OFF)", h.clutch_coil + 1);
+        snprintf(line3, sizeof(line3), "A/C: %s  (CH%d OFF)",
+                 h.fan_only ? "fan only" : "idle", h.clutch_coil + 1);
     }
     lv_label_set_text(s_hvac_ac_lbl, line3);
 
@@ -409,6 +434,14 @@ static void build_controls(lv_obj_t *content)
 
     /* --- Fan --- */
     section_label(card, "Fan", 0, 68);
+
+    /* FAN ONLY sits on the Fan row, right-aligned. The card is 376 wide
+     * with 20 px padding, so the content box is 336 px: 250 + 86 = 336. */
+    s_fanonly_pill = pill(card, "FAN ONLY", on_fan_only);
+    lv_obj_set_size(s_fanonly_pill, 86, 28);
+    lv_obj_set_pos(s_fanonly_pill, 250, 62);
+    lv_obj_set_style_text_font(lv_obj_get_child(s_fanonly_pill, 0),
+                               &lv_font_montserrat_12, 0);
     lv_obj_t *fan_icon = lv_label_create(card);
     lv_label_set_text(fan_icon, LV_SYMBOL_REFRESH);
     lv_obj_set_style_text_font(fan_icon, &lv_font_montserrat_20, 0);

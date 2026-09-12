@@ -55,6 +55,7 @@ typedef enum {
     HMI_AC_FIELD_TEMP      = 3,
     HMI_AC_FIELD_AIRFLOW   = 4,   /* value = ac_airflow_bit_t mask */
     HMI_AC_FIELD_FLAGS     = 5,   /* bit0=front_def, bit1=rear_def, bit2=fresh   */
+    HMI_AC_FIELD_FAN_ONLY  = 6,   /* 1 = blower only, compressor clutch stays off */
 } hmi_ac_field_t;
 
 /* ---- SECONDARY SIDE -------------------------------------------------- */

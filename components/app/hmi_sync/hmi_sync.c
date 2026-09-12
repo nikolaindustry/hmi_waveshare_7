@@ -26,7 +26,8 @@ static const char *TAG = "hmi_sync";
 #define M_RGB_FLOOR       0x14   /* 4 regs: on, hue, sat, brightness */
 #define M_STAR_ROOF       0x18   /* 2 regs: on, intensity            */
 
-#define M_AC              0x20   /* 6 regs: power, auto, fan, temp, airflow, flags */
+#define M_AC              0x20   /* 7 regs: power, auto, fan, temp, airflow, flags,
+                                  *         fan_only */
 
 #define M_HVAC            0x30   /* 8 regs: mode, wait, wait_ms, fan_step, clutch_on,
                                             cabin_c*10, target_c*10, delta_c*10 */
@@ -176,6 +177,7 @@ void hmi_sync_apply_intent(hmi_cmd_t cmd, uint16_t a0, uint16_t a1, uint16_t a2)
             switch ((hmi_ac_field_t)a0) {
                 case HMI_AC_FIELD_POWER:     st->power         = a1 != 0; break;
                 case HMI_AC_FIELD_AUTO:      st->auto_mode     = a1 != 0; break;
+                case HMI_AC_FIELD_FAN_ONLY:  st->fan_only      = a1 != 0; break;
                 case HMI_AC_FIELD_FAN_LEVEL: st->fan_level     = (int)a1; break;
                 case HMI_AC_FIELD_TEMP:      st->temp_c        = (int)a1; break;
                 case HMI_AC_FIELD_AIRFLOW:   st->airflow_mask  = (int)a1; break;
@@ -268,6 +270,7 @@ void hmi_sync_encode_mirror(uint16_t out[HMI_MIRROR_REGS])
         out[M_AC+5] = (uint16_t)((a->front_defrost ? 1 : 0) |
                                  (a->rear_defrost  ? 2 : 0) |
                                  (a->fresh_air     ? 4 : 0));
+        out[M_AC+6] = a->fan_only ? 1 : 0;
     }
 
     hvac_status_t h;
@@ -346,6 +349,7 @@ void hmi_sync_write_mirror(const uint16_t in[HMI_MIRROR_REGS])
         a->front_defrost = (flags & 0x1) != 0;
         a->rear_defrost  = (flags & 0x2) != 0;
         a->fresh_air     = (flags & 0x4) != 0;
+        a->fan_only      = in[M_AC+6] != 0;
     }
     /* HVAC status + cabin env are read-only mirrors on secondary; the
      * climate tab on secondary reads ac_state/ctrl_rgb/ctrl_star but

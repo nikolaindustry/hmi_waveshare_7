@@ -20,6 +20,11 @@
  *  - MANUAL : user's fan_level slider (1..5) mapped to LOW/MED/HIGH.
  *             Clutch is still gated by safety interlocks.
  *
+ *  FAN ONLY (ac_state()->fan_only) is orthogonal to both modes: it
+ *  vetoes the compressor clutch outright while leaving the blower
+ *  under whichever mode is active. Use it on vans with no compressor
+ *  wired, or when the customer wants ventilation without cooling.
+ *
  *  Safety interlocks (always enforced, in both modes)
  *  --------------------------------------------------
  *  - Blower must run >= HVAC_BLOWER_PRESPIN_MS before clutch may engage.
@@ -57,6 +62,7 @@ typedef enum {
     HVAC_WAIT_FAN_OFF   = 3, /* want clutch but fan is off */
     HVAC_WAIT_NO_SENSOR = 4, /* AUTO: BMP280 unavailable, holding state */
     HVAC_WAIT_PURGE     = 5, /* blower-purge countdown after master off */
+    HVAC_WAIT_FAN_ONLY  = 6, /* FAN ONLY selected: clutch deliberately off */
 } hvac_wait_t;
 
 typedef struct {
@@ -65,6 +71,7 @@ typedef struct {
     int         fan_step;       /* 0=OFF 1=LOW 2=MED 3=HIGH 4=MAX */
     int         fan_coil;       /* coil id (0..15), or -1 if OFF/unused */
     bool        clutch_on;
+    bool        fan_only;       /* FAN ONLY selected -- clutch is inhibited */
     int         clutch_coil;    /* coil id, or -1 if unused */
     bool        cabin_valid;    /* true if BMP280 reading is fresh */
     float       cabin_c;        /* last cabin temperature (only if valid) */
