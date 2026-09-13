@@ -29,6 +29,7 @@
 static const char *TAG = "HYPER_APP";
 
 #define MAX_USER_RELAYS   8     /* coils 0..7 are user-controllable; 8..15 HVAC-owned */
+#define RELAY_BOARD_COILS 16    /* Waveshare 16CH board: coils 0..15          */
 #define MAX_WIDGET_ID_LEN 64
 
 /* RGB slave register map. Must stay in sync with slave_rgb_arduino.ino,
@@ -182,8 +183,63 @@ static void build_status_payload(cJSON *payload)
 
 /* ==================== Custom command handlers ==================== */
 
+/* ---- shared param parsing -------------------------------------------
+ *
+ * Both relay commands accept the same loose spelling, because the
+ * dashboards that talk to these boards are not consistent: some send
+ * {coil,on}, some {relay,state}, and some stringify every value. */
+
+/* Coil id from {coil:...} or {relay:...}, number or numeric string.
+ * Returns -1 when neither key carries a usable value. */
+static int coil_id_from_params(cJSON *params)
+{
+    cJSON *coil_j  = cJSON_GetObjectItem(params, "coil");
+    cJSON *relay_j = cJSON_GetObjectItem(params, "relay");
+    cJSON *id_j    = (cJSON_IsNumber(relay_j) || cJSON_IsString(relay_j)) ? relay_j : coil_j;
+    if (cJSON_IsNumber(id_j)) return (int)id_j->valuedouble;
+    if (cJSON_IsString(id_j) && id_j->valuestring) return atoi(id_j->valuestring);
+    return -1;
+}
+
+/* Desired state from {state:...} or {on:...}. Accepts a real bool, a
+ * number, or "true"/"on"/"1" and their opposites. False on anything
+ * unrecognised, with *ok cleared so the caller can skip the action
+ * rather than silently switching a relay off. */
+static bool bool_from_params(cJSON *params, bool *ok)
+{
+    cJSON *on_j    = cJSON_GetObjectItem(params, "on");
+    cJSON *state_j = cJSON_GetObjectItem(params, "state");
+    cJSON *bool_j  = state_j ? state_j : on_j;
+    *ok = true;
+    if (cJSON_IsBool(bool_j))   return cJSON_IsTrue(bool_j);
+    if (cJSON_IsNumber(bool_j)) return bool_j->valuedouble != 0.0;
+    if (cJSON_IsString(bool_j) && bool_j->valuestring) {
+        const char *s = bool_j->valuestring;
+        if (!strcasecmp(s, "true")  || !strcasecmp(s, "on")  || !strcmp(s, "1")) return true;
+        if (!strcasecmp(s, "false") || !strcasecmp(s, "off") || !strcmp(s, "0")) return false;
+    }
+    *ok = false;
+    return false;
+}
+
+/* Keep the touchscreen's own model in step for coils it tracks outside
+ * the reading-light array, so the Control tab does not show stale state
+ * after a cloud write. Reading lights (0..7) are refreshed by the
+ * modbus worker's read-back and need nothing here. */
+static void mirror_coil_into_ui(uint16_t coil, bool on)
+{
+    if (coil == CTRL_STAR_COIL) {
+        ctrl_star_t *st = ctrl_star_roof();
+        if (st) st->on = on;
+    }
+}
+
 /* relay_control: { command:"relay_control", actions:[{ action:"set",
- *                  params:{ coil:<int>, on:<bool> } }] }                */
+ *                  params:{ coil:<int>, on:<bool> } }] }
+ *
+ * The original, deliberately narrow command: reading lights only
+ * (coils 0..MAX_USER_RELAYS-1). Kept exactly as it was so existing
+ * dashboard widgets keep working. For anything else use coil_control. */
 static void handle_relay_control(const char *from, cJSON *payload)
 {
     cJSON *actions = cJSON_GetObjectItem(payload, "actions");
@@ -195,43 +251,17 @@ static void handle_relay_control(const char *from, cJSON *payload)
         cJSON *params = cJSON_GetObjectItem(act, "params");
         if (!cJSON_IsObject(params)) continue;
 
-        /* Accept both legacy {coil,on} and new {relay,state} naming.
-         * Also accept string forms ("1", "true", "on", "0", "false")
-         * for dashboards that stringify all params. */
-        cJSON *coil_j  = cJSON_GetObjectItem(params, "coil");
-        cJSON *relay_j = cJSON_GetObjectItem(params, "relay");
-        cJSON *id_j    = cJSON_IsNumber(relay_j) || cJSON_IsString(relay_j) ? relay_j : coil_j;
-        int   coil     = -1;
-        if (cJSON_IsNumber(id_j)) {
-            coil = (int)id_j->valuedouble;
-        } else if (cJSON_IsString(id_j) && id_j->valuestring) {
-            coil = atoi(id_j->valuestring);
-        } else {
-            continue;
-        }
-
-        cJSON *on_j    = cJSON_GetObjectItem(params, "on");
-        cJSON *state_j = cJSON_GetObjectItem(params, "state");
-        cJSON *bool_j  = state_j ? state_j : on_j;
-        bool on = false;
-        if (cJSON_IsBool(bool_j)) {
-            on = cJSON_IsTrue(bool_j);
-        } else if (cJSON_IsNumber(bool_j)) {
-            on = bool_j->valuedouble != 0.0;
-        } else if (cJSON_IsString(bool_j) && bool_j->valuestring) {
-            const char *s = bool_j->valuestring;
-            if      (!strcasecmp(s, "true")  || !strcasecmp(s, "on")  || !strcmp(s, "1")) on = true;
-            else if (!strcasecmp(s, "false") || !strcasecmp(s, "off") || !strcmp(s, "0")) on = false;
-            else continue;
-        } else {
-            continue;
-        }
+        int coil = coil_id_from_params(params);
+        if (coil < 0) continue;
+        bool ok = false;
+        bool on = bool_from_params(params, &ok);
+        if (!ok) continue;
 
         cJSON *resp = cJSON_CreateObject();
         cJSON_AddNumberToObject(resp, "relay", coil);
         cJSON_AddBoolToObject  (resp, "state", on);
 
-        if (coil < 0 || coil >= MAX_USER_RELAYS || is_hvac_owned_coil((uint16_t)coil)) {
+        if (coil >= MAX_USER_RELAYS || is_hvac_owned_coil((uint16_t)coil)) {
             ESP_LOGW(TAG, "relay_control: reject coil %d (HVAC-owned or out of range)", coil);
             cJSON_AddStringToObject(resp, "status", "rejected");
             cJSON_AddStringToObject(resp, "reason", "hvac_reserved_or_out_of_range");
@@ -241,6 +271,80 @@ static void handle_relay_control(const char *from, cJSON *payload)
             cJSON_AddStringToObject(resp, "status", "ok");
         }
         hyperwisor_emit(from, "relay_control", "response", resp);
+    }
+}
+
+/* coil_control: { command:"coil_control", actions:[{ action:"set",
+ *                 params:{ coil:<0..15>, state:<bool>, force:<bool> } }] }
+ *
+ * The general form: any coil on the relay board by number, with no
+ * knowledge of what is wired to it. This is what a dashboard should
+ * use for the star roof (15) and the switch block (11, 13, 14), none
+ * of which relay_control can reach.
+ *
+ * The four coils the climate controller owns are still gated, for a
+ * practical reason rather than a policy one: that controller re-decides
+ * every tick and would overwrite a cloud write within a second, so the
+ * relay would visibly flick back. Worse, writing the compressor clutch
+ * straight out bypasses the anti-short-cycle lockout that protects it.
+ * Sending "force": true does the write anyway -- useful for bench
+ * testing a wiring loom -- and the response says plainly that it will
+ * not stick. */
+static void handle_coil_control(const char *from, cJSON *payload)
+{
+    cJSON *actions = cJSON_GetObjectItem(payload, "actions");
+    if (!cJSON_IsArray(actions)) return;
+
+    int count = cJSON_GetArraySize(actions);
+    for (int i = 0; i < count; i++) {
+        cJSON *act    = cJSON_GetArrayItem(actions, i);
+        cJSON *params = cJSON_GetObjectItem(act, "params");
+        if (!cJSON_IsObject(params)) continue;
+
+        int coil = coil_id_from_params(params);
+        bool ok = false;
+        bool on = bool_from_params(params, &ok);
+
+        cJSON *resp = cJSON_CreateObject();
+        cJSON_AddNumberToObject(resp, "coil", coil);
+        cJSON_AddBoolToObject  (resp, "state", on);
+
+        if (coil < 0 || coil >= RELAY_BOARD_COILS) {
+            ESP_LOGW(TAG, "coil_control: coil %d out of range", coil);
+            cJSON_AddStringToObject(resp, "status", "rejected");
+            cJSON_AddStringToObject(resp, "reason", "out_of_range");
+            hyperwisor_emit(from, "coil_control", "response", resp);
+            continue;
+        }
+        if (!ok) {
+            ESP_LOGW(TAG, "coil_control: coil %d has no usable state", coil);
+            cJSON_AddStringToObject(resp, "status", "rejected");
+            cJSON_AddStringToObject(resp, "reason", "missing_state");
+            hyperwisor_emit(from, "coil_control", "response", resp);
+            continue;
+        }
+
+        bool forced = cJSON_IsTrue(cJSON_GetObjectItem(params, "force"));
+        if (is_hvac_owned_coil((uint16_t)coil) && !forced) {
+            ESP_LOGW(TAG, "coil_control: coil %d is HVAC-owned, pass force:true to override", coil);
+            cJSON_AddStringToObject(resp, "status", "rejected");
+            cJSON_AddStringToObject(resp, "reason", "hvac_owned");
+            cJSON_AddStringToObject(resp, "hint",
+                "climate controller drives this coil; use hvac_control, or force:true to write anyway");
+            hyperwisor_emit(from, "coil_control", "response", resp);
+            continue;
+        }
+
+        ESP_LOGI(TAG, "coil_control: coil=%d on=%d%s (from %s)",
+                 coil, on, forced ? " FORCED" : "", from);
+        modbus_task_request((uint16_t)coil, on);
+        mirror_coil_into_ui((uint16_t)coil, on);
+
+        cJSON_AddStringToObject(resp, "status", "ok");
+        if (forced && is_hvac_owned_coil((uint16_t)coil)) {
+            cJSON_AddStringToObject(resp, "warning", "hvac_will_reassert");
+        }
+        hyperwisor_emit(from, "coil_control", "response", resp);
     }
 }
 
@@ -575,6 +679,7 @@ esp_err_t hyperwisor_app_init(void)
     load_cached_bindings();
 
     hyperwisor_register_cmd_handler("relay_control", handle_relay_control);
+    hyperwisor_register_cmd_handler("coil_control",  handle_coil_control);
     hyperwisor_register_cmd_handler("hvac_control",  handle_hvac_control);
     hyperwisor_register_cmd_handler("get_status",    handle_get_status);
     hyperwisor_register_cmd_handler("config",        handle_config);
