@@ -7,6 +7,13 @@
  *  the display renders, modulo the panel's own colour/backlight.
  *
  *  Build & run:  ./sim/run.sh
+ *
+ *  Two modes:
+ *    (default)        the hand-built ui_* shell, as it ships
+ *    --dashboard [p]  render a transcoded Hyperwisor dashboard spec
+ *                     instead, so a JSON-authored dashboard can be
+ *                     reviewed at 800x480 before anything is flashed.
+ *                     Defaults to assets/dashboard/dashboard.json.
  * ===================================================================== */
 
 #include <SDL2/SDL.h>
@@ -20,9 +27,12 @@
 #include "hmi_role.h"
 #include "bus_config.h"
 #include "ctrl_state.h"
+#include "hds.h"
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define DISP_HOR   800
 #define DISP_VER   480
@@ -63,9 +73,97 @@ static void on_splash_done(lv_obj_t *scr)
     ui_shell_build(scr);
 }
 
+/* =====================================================================
+ *  Dashboard mode
+ * ===================================================================== */
+
+static const char *s_spec_path  = "assets/dashboard/dashboard.json";
+static const char *s_asset_dir  = "assets/dashboard/assets";
+static bool        s_dashboard;
+static const char *s_shot_path;   /* --shot: save a BMP and exit */
+static int         s_shot_page;
+static int         s_tap_x = -1, s_tap_y = -1;   /* --tap: synthetic touch */
+static bool        s_tap_down;
+
+/* Stands in for the firmware's hyperwisor_emit(). On the device this is
+ * where the local-first resolver goes: a RELAY_CONTROL for a coil this
+ * board owns should drive modbus_task directly instead of round-tripping
+ * through the cloud. Here we just show what would go out. */
+static void sim_emit(const char *target, const cJSON *payload, void *user)
+{
+    (void)user;
+    /* Print the whole payload, placeholders already filled, so what you
+     * see here is byte-for-byte what the web dashboard would send. */
+    char *txt = cJSON_PrintUnformatted((cJSON *)payload);
+    printf("  -> emit  target=%s\n     %s\n",
+           target ? target : "(none)", txt ? txt : "{}");
+    free(txt);
+}
+
+static void dashboard_show(void)
+{
+    if (hds_init(s_spec_path, s_asset_dir) != ESP_OK) {
+        printf("!! could not load %s\n", s_spec_path);
+        printf("   run: python3 tools/hds_transcode.py <export.json> "
+               "-o assets/dashboard\n");
+        return;
+    }
+    hds_set_emit(sim_emit, NULL);
+
+    lv_obj_t *scr = lv_obj_create(NULL);
+    lv_obj_remove_style_all(scr);
+    lv_scr_load(scr);
+    hds_build(scr);
+}
+
+/* Read the rendered frame back off the SDL renderer and save it. Gives
+ * an exact 800x480 capture with no window-manager involvement, so a
+ * layout can be reviewed (or diffed in CI) headlessly. */
+static int save_shot(const char *path)
+{
+    SDL_Surface *surf = SDL_CreateRGBSurfaceWithFormat(
+        0, DISP_HOR, DISP_VER, 24, SDL_PIXELFORMAT_RGB24);
+    if (!surf) {
+        fprintf(stderr, "shot: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    /* Re-compose the full texture into the back buffer and read that,
+     * without presenting. Reading straight after a Present returns
+     * whichever buffer the driver swapped in, which on a partial-render
+     * flush is only the last band LVGL touched. */
+    SDL_RenderClear(s_ren);
+    SDL_RenderCopy(s_ren, s_tex, NULL, NULL);
+    if (SDL_RenderReadPixels(s_ren, NULL, SDL_PIXELFORMAT_RGB24,
+                             surf->pixels, surf->pitch) != 0) {
+        fprintf(stderr, "shot: %s\n", SDL_GetError());
+        SDL_FreeSurface(surf);
+        return 1;
+    }
+    int rc = SDL_SaveBMP(surf, path);
+    SDL_FreeSurface(surf);
+    if (rc != 0) {
+        fprintf(stderr, "shot: %s\n", SDL_GetError());
+        return 1;
+    }
+    printf("wrote %s (%dx%d)\n", path, DISP_HOR, DISP_VER);
+    return 0;
+}
+
 static void mouse_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
 {
     (void)drv;
+    /* --tap drives the real input device rather than calling a widget's
+     * callback directly, so what gets exercised is the whole chain:
+     * hit-testing, LVGL's event dispatch, then the emit sink. */
+    if (s_tap_x >= 0) {
+        data->point.x = s_tap_x;
+        data->point.y = s_tap_y;
+        data->state = s_tap_down ? LV_INDEV_STATE_PRESSED
+                                 : LV_INDEV_STATE_RELEASED;
+        return;
+    }
+
     int x, y;
     Uint32 btn = SDL_GetMouseState(&x, &y);
     data->point.x = x;
@@ -76,7 +174,33 @@ static void mouse_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
 
 int main(int argc, char **argv)
 {
-    (void)argc; (void)argv;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--dashboard") == 0) {
+            s_dashboard = true;
+            /* An optional path may follow, as long as it is not the
+             * next flag. */
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                s_spec_path = argv[++i];
+            }
+        } else if (strcmp(argv[i], "--assets") == 0 && i + 1 < argc) {
+            s_asset_dir = argv[++i];
+        } else if (strcmp(argv[i], "--shot") == 0 && i + 1 < argc) {
+            s_shot_path = argv[++i];
+        } else if (strcmp(argv[i], "--page") == 0 && i + 1 < argc) {
+            s_shot_page = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--tap") == 0 && i + 1 < argc) {
+            if (sscanf(argv[++i], "%d,%d", &s_tap_x, &s_tap_y) != 2) {
+                fprintf(stderr, "--tap wants X,Y\n");
+                return 2;
+            }
+        } else {
+            fprintf(stderr,
+                    "usage: %s [--dashboard [spec.json]] [--assets DIR]\n"
+                    "          [--page N] [--tap X,Y] [--shot out.bmp]\n",
+                    argv[0]);
+            return 2;
+        }
+    }
 
     /* Line-buffer stdout so ESP_LOGx output appears live when the sim's
      * output is piped to a file, not only when the process exits. */
@@ -125,10 +249,55 @@ int main(int argc, char **argv)
     display_brightness_init();
     ctrl_state_start_autosave();  /* LVGL is already up here */
 
-    /* Splash first, exactly as app.c does on the device, so the boot
-     * screen can be previewed here too. Press R to replay it. */
-    splash_show(SPLASH_MS, on_splash_done);
-    printf("--- simulator up: 800x480, click to 'touch', R replays splash ---\n");
+    if (s_dashboard) {
+        /* Straight to the dashboard -- the splash belongs to the shell
+         * and would only get in the way of reviewing a layout. */
+        dashboard_show();
+        printf("--- dashboard mode: %s ---\n", s_spec_path);
+        printf("    click to 'touch', H outlines hit areas, "
+               "1/2 switch pages, ESC quits\n");
+    } else {
+        /* Splash first, exactly as app.c does on the device, so the boot
+         * screen can be previewed here too. Press R to replay it. */
+        splash_show(SPLASH_MS, on_splash_done);
+        printf("--- simulator up: 800x480, click to 'touch', "
+               "R replays splash ---\n");
+    }
+
+    if (s_dashboard && s_shot_page > 0) {
+        hds_spec_t *sp = hds_spec();
+        if (sp && s_shot_page <= sp->n_pages) {
+            hds_goto(sp->pages[s_shot_page - 1].id);
+        }
+    }
+
+    /* --shot: pump the loop long enough for LVGL to lay out and flush a
+     * full frame, save it, and quit. */
+    if (s_shot_path) {
+        for (int i = 0; i < 60; i++) {
+            lv_timer_handler();
+            lv_tick_inc(TICK_MS);
+            SDL_PumpEvents();
+        }
+
+        if (s_tap_x >= 0) {
+            printf("--- tap %d,%d ---\n", s_tap_x, s_tap_y);
+            s_tap_down = true;
+            for (int i = 0; i < 12; i++) {
+                lv_timer_handler(); lv_tick_inc(TICK_MS);
+            }
+            s_tap_down = false;
+            for (int i = 0; i < 24; i++) {
+                lv_timer_handler(); lv_tick_inc(TICK_MS);
+            }
+        }
+        int rc = save_shot(s_shot_path);
+        SDL_DestroyTexture(s_tex);
+        SDL_DestroyRenderer(s_ren);
+        SDL_DestroyWindow(s_win);
+        SDL_Quit();
+        return rc;
+    }
 
     bool running = true;
     while (running) {
@@ -139,10 +308,35 @@ int main(int argc, char **argv)
                 running = false;
             /* R: wipe to a blank screen and replay the splash, so the
              * boot sequence can be reviewed without relaunching. */
-            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_r) {
+            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_r
+                && !s_dashboard) {
                 lv_obj_t *fresh = lv_obj_create(NULL);
                 lv_scr_load_anim(fresh, LV_SCR_LOAD_ANIM_NONE, 0, 0, true);
                 splash_show(SPLASH_MS, on_splash_done);
+            }
+
+            if (s_dashboard && e.type == SDL_KEYDOWN) {
+                SDL_Keycode k = e.key.keysym.sym;
+                /* H: outline the hit areas. Navigation widgets are often
+                 * transparent regions behind artwork, so there is no
+                 * other way to see where they are. */
+                if (k == SDLK_h) {
+                    hds_set_debug_hitboxes(!hds_get_debug_hitboxes());
+                }
+                /* R: reload the spec from disk, so the transcoder can be
+                 * re-run without relaunching the sim. */
+                if (k == SDLK_r) {
+                    dashboard_show();
+                    printf("--- reloaded %s ---\n", s_spec_path);
+                }
+                /* 1..9: jump straight to a page by index. */
+                if (k >= SDLK_1 && k <= SDLK_9) {
+                    hds_spec_t *sp = hds_spec();
+                    int idx = k - SDLK_1;
+                    if (sp && idx < sp->n_pages) {
+                        hds_goto(sp->pages[idx].id);
+                    }
+                }
             }
         }
         lv_timer_handler();

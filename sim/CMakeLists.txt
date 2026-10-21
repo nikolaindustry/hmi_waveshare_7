@@ -53,10 +53,26 @@ set(APP_SRCS
     ${REPO}/components/app/bus_config/bus_config.c
 )
 
+# ---- Declarative dashboard renderer (components/app/hds) ----
+# Compiled from its real location, same as the UI above. cJSON comes
+# from the managed component the firmware already pulls in, so the sim
+# parses specs with the exact parser that runs on the device.
+set(HDS_DIR ${REPO}/components/app/hds)
+set(HDS_SRCS
+    ${HDS_DIR}/hds_spec.c
+    ${HDS_DIR}/hds_inject.c
+    ${HDS_DIR}/hds_assets.c
+    ${HDS_DIR}/hds_widget.c
+    ${HDS_DIR}/hds_render.c
+)
+set(CJSON_DIR ${REPO}/managed_components/espressif__cjson/cJSON)
+
 add_executable(hmi_sim
     ${CMAKE_CURRENT_LIST_DIR}/main.c
     ${CMAKE_CURRENT_LIST_DIR}/stubs/stubs.c
     ${APP_SRCS}
+    ${HDS_SRCS}
+    ${CJSON_DIR}/cJSON.c
     ${LVGL_SRCS}
 )
 
@@ -74,6 +90,8 @@ target_include_directories(hmi_sim PRIVATE
     ${REPO}/components/app/hmi_link
     ${REPO}/components/app/bus_config
     ${REPO}/components/bsp_s3_rgb/include
+    ${HDS_DIR}
+    ${CJSON_DIR}
     ${SDL2_INCLUDE_DIRS}
 )
 
