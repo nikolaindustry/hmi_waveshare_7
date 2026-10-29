@@ -87,3 +87,12 @@ CONFIG_HYPERWISOR_ENABLE_WIDGET=y
 CONFIG_HYPERWISOR_ENABLE_OTA=y
 CONFIG_HYPERWISOR_ENABLE_GPIO=n
 CONFIG_HYPERWISOR_ENABLE_DISPLAY=n
+
+# ---- OTA rollback ----
+# Without this the bootloader never marks a freshly-written image
+# PENDING_VERIFY, so esp_ota_mark_app_valid_cancel_rollback() in
+# hyperwisor_ota.c is a no-op and a bad OTA bricks the panel until
+# someone attends with a USB cable. With it, an image that fails to
+# reach the "good boot" confirmation is reverted to the previous slot
+# on the next reset.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
