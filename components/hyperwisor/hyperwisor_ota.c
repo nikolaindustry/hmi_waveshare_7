@@ -34,6 +34,12 @@ static char s_ota_feedback_target[64] = {0};
 /* Track last reported progress to avoid spamming */
 static int s_last_reported_percent = -1;
 
+/* Live download progress for the UI. -1 = no update running, 0..100
+ * while one is. Written from the OTA task, read from the LVGL task --
+ * a single aligned int, so plain volatile is enough here and avoids
+ * dragging a lock into the download loop. */
+static volatile int s_progress_percent = -1;
+
 /* Set true while OTA download is running to prevent the core task
  * from reconnecting the WS client (which would fight for TLS stack). */
 static volatile bool s_ota_in_progress = false;
@@ -84,6 +90,7 @@ static void ota_report_progress(int percent)
         return;
     }
     s_last_reported_percent = step;
+    s_progress_percent = step;
     ESP_LOGI(TAG, "OTA progress: %d%%", step);
 }
 
@@ -130,6 +137,7 @@ esp_err_t hyperwisor_ota_perform(const char *url)
      * download and prevents the WS heartbeat timer from hammering
      * the ws_client mutex while we're busy downloading. */
     s_ota_in_progress = true;   /* tell core task: don't reconnect WS */
+    s_progress_percent = 0;     /* tell the UI to raise the overlay    */
     vTaskDelay(pdMS_TO_TICKS(500));
     hyperwisor_ws_disconnect();
     vTaskDelay(pdMS_TO_TICKS(200));
@@ -217,10 +225,16 @@ esp_err_t hyperwisor_ota_perform(const char *url)
          * Once connected, the main task loop will read the NVS reason
          * key and report the failure to the cloud. */
         s_ota_in_progress = false;
+        s_progress_percent = -1;   /* download over -- drop the overlay */
         hyperwisor_nvs_set_str("ota_failed_reason", esp_err_to_name(err));
     }
 
     return err;
+}
+
+int hyperwisor_ota_get_progress(void)
+{
+    return s_progress_percent;
 }
 
 void hyperwisor_ota_get_version(char *out_buf, size_t buf_len)

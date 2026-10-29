@@ -27,6 +27,7 @@
 #include "bsp.h"
 #include "hyperwisor.h"
 #include "hyperwisor_app.h"
+#include "hyperwisor_ota.h"
 
 #include "modbus_client.h"
 #include "modbus_task.h"
@@ -39,6 +40,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include <string.h>
 #include <stdbool.h>
 
@@ -361,6 +363,36 @@ esp_err_t hyperwisor_set_user_id(const char *id)
 { snprintf(s_hw.user_id, sizeof(s_hw.user_id), "%s", id ? id : ""); return ESP_OK; }
 esp_err_t hyperwisor_clear_credentials(void)
 { ESP_LOGW(TAG, "credentials cleared"); return ESP_OK; }
+
+/* ---- OTA stub ---- */
+void hyperwisor_ota_get_version(char *out_buf, size_t buf_len)
+{
+    snprintf(out_buf, buf_len, "v1.1.9-sim");
+}
+
+int hyperwisor_ota_get_progress(void)
+{
+    /* Idle unless the operator asked for a simulated update. */
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("HMI_SIM_OTA");
+        enabled = (e && *e == '1') ? 1 : 0;
+    }
+    if (!enabled) return -1;
+
+    /* Ramp 0..100 between t=5 s and t=25 s, then go idle again so the
+     * overlay's teardown path gets exercised too. */
+    static struct timespec t0;
+    if (t0.tv_sec == 0) clock_gettime(CLOCK_MONOTONIC, &t0);
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double el = (now.tv_sec - t0.tv_sec) + (now.tv_nsec - t0.tv_nsec) / 1e9;
+    if (el < 5.0 || el > 25.0) return -1;
+    int pct = (int)((el - 5.0) / 20.0 * 100.0);
+    return (pct / 10) * 10;
+}
+
+bool hyperwisor_ota_is_in_progress(void) { return hyperwisor_ota_get_progress() >= 0; }
 
 const char *hyperwisor_app_get_target_id(void) { return s_hw.device_id; }
 esp_err_t   hyperwisor_app_init(void) { return ESP_OK; }

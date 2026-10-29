@@ -10,6 +10,7 @@
 #include "img_nikola_logo.h"
 #include "hyperwisor.h"
 #include "hyperwisor_app.h"
+#include "hyperwisor_ota.h"
 #include "display_brightness.h"
 #include "modbus_client.h"
 #include "modbus_task.h"
@@ -1503,6 +1504,9 @@ static lv_obj_t  *s_cloud_user_lbl;
 static lv_obj_t  *s_cloud_ssid_lbl;
 static lv_obj_t  *s_cloud_pass_lbl;
 static lv_obj_t  *s_cloud_mac_lbl;
+static lv_obj_t  *s_cloud_fw_lbl;    /* running firmware version        */
+static lv_obj_t  *s_cloud_ota_lbl;   /* "Updating NN%" -- hidden if idle */
+static lv_obj_t  *s_cloud_ota_bar;
 static lv_obj_t  *s_cloud_clear_btn;
 static lv_obj_t  *s_cloud_clear_lbl;
 static lv_obj_t  *s_cloud_ta_device;
@@ -1600,6 +1604,31 @@ static void cloud_refresh(lv_timer_t *t)
                      "Bind:    waiting for 'config' command from app");
         }
         lv_label_set_text(s_cloud_bind_lbl, buf);
+    }
+
+    if (s_cloud_fw_lbl) {
+        char ver[32];
+        hyperwisor_ota_get_version(ver, sizeof(ver));
+        snprintf(buf, sizeof(buf), "FW  %.24s", ver);
+        lv_label_set_text(s_cloud_fw_lbl, buf);
+    }
+
+    /* OTA in flight? Raise the progress row and hide it again when the
+     * download ends (either way -- a failed OTA leaves the panel on the
+     * old image and the form should come back). */
+    if (s_cloud_ota_lbl && s_cloud_ota_bar) {
+        int pct = hyperwisor_ota_get_progress();
+        if (pct >= 0) {
+            snprintf(buf, sizeof(buf),
+                     "UPDATING  %d%%  â¢  do not power off", pct);
+            lv_label_set_text(s_cloud_ota_lbl, buf);
+            lv_bar_set_value(s_cloud_ota_bar, pct, LV_ANIM_OFF);
+            lv_obj_clear_flag(s_cloud_ota_lbl, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(s_cloud_ota_bar, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(s_cloud_ota_lbl, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_cloud_ota_bar, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 
     if (s_cloud_mac_lbl) {
@@ -1726,6 +1755,9 @@ static void on_cloud_panel_deleted(lv_event_t *e)
     s_cloud_ssid_lbl  = NULL;
     s_cloud_pass_lbl  = NULL;
     s_cloud_mac_lbl   = NULL;
+    s_cloud_fw_lbl    = NULL;
+    s_cloud_ota_lbl   = NULL;
+    s_cloud_ota_bar   = NULL;
     s_cloud_clear_btn = NULL;
     s_cloud_clear_lbl = NULL;
     s_cloud_ta_device = NULL;
@@ -1771,6 +1803,15 @@ static void detail_cloud(lv_obj_t *p)
     lv_obj_set_style_text_color(s_cloud_clear_lbl, hex(UI_COLOR_TEXT), 0);
     lv_obj_center(s_cloud_clear_lbl);
 
+    /* Running firmware version, in the header row between the title and
+     * the Clear button. Someone pushing an OTA needs to see which build
+     * is actually on the panel, and this is the screen they are on. */
+    s_cloud_fw_lbl = lv_label_create(p);
+    lv_label_set_text(s_cloud_fw_lbl, "");
+    lv_obj_set_style_text_font(s_cloud_fw_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_cloud_fw_lbl, hex(UI_COLOR_DIM), 0);
+    lv_obj_set_pos(s_cloud_fw_lbl, 150, 22);
+
     /* ---- Status grid: 2 columns x 4 rows, y=54..118 ---- */
     /* Left column (x=20, w=244): WiFi, Cloud, SSID, Pass.
      * Right column (x=276, w=244): Device, User, Bind, MAC. */
@@ -1782,6 +1823,28 @@ static void detail_cloud(lv_obj_t *p)
     s_cloud_user_lbl = cloud_row_label_xw(p, 276,  72, 244, UI_COLOR_MUTED);
     s_cloud_bind_lbl = cloud_row_label_xw(p, 276,  90, 244, UI_COLOR_MUTED);
     s_cloud_mac_lbl  = cloud_row_label_xw(p, 276, 108, 244, UI_COLOR_DIM);
+
+    /* ---- OTA progress, hidden unless a download is running ----
+     * Overlays the form header row: while an update is in flight the
+     * form is useless anyway (the panel is about to reboot), and this
+     * keeps it in the reader's eye-line rather than below the fold. */
+    s_cloud_ota_lbl = lv_label_create(p);
+    lv_label_set_text(s_cloud_ota_lbl, "");
+    lv_obj_set_style_text_font(s_cloud_ota_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_cloud_ota_lbl, hex(UI_COLOR_WARN), 0);
+    lv_obj_set_pos(s_cloud_ota_lbl, 20, 140);
+    lv_obj_add_flag(s_cloud_ota_lbl, LV_OBJ_FLAG_HIDDEN);
+
+    s_cloud_ota_bar = lv_bar_create(p);
+    lv_obj_set_size(s_cloud_ota_bar, 496, 6);
+    lv_obj_set_pos(s_cloud_ota_bar, 20, 160);
+    lv_bar_set_range(s_cloud_ota_bar, 0, 100);
+    lv_bar_set_value(s_cloud_ota_bar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(s_cloud_ota_bar, hex(UI_COLOR_SURFACE_LO), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_cloud_ota_bar, hex(UI_COLOR_WARN), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(s_cloud_ota_bar, 3, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_cloud_ota_bar, 3, LV_PART_INDICATOR);
+    lv_obj_add_flag(s_cloud_ota_bar, LV_OBJ_FLAG_HIDDEN);
 
     /* ---- Manual-entry form ---- */
     lv_obj_t *form_hdr = lv_label_create(p);

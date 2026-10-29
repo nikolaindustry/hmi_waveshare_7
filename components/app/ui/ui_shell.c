@@ -1,6 +1,7 @@
 #include "ui_shell.h"
 #include "ui_theme.h"
 #include "ui_tabs.h"
+#include "hyperwisor_ota.h"
 #include "esp_log.h"
 #include <stdio.h>
 
@@ -138,6 +139,90 @@ static void build_tabbar(lv_obj_t *parent)
 }
 
 /* ---------- entry ---------- */
+/* ===================================================================
+ *  OTA overlay
+ *
+ *  An update is pushed from the cloud, so it can start while the user
+ *  is on any tab -- and it ends in a reboot. They need to be told what
+ *  is happening and, more to the point, not to cut power halfway
+ *  through. Built on the top layer so it covers the tab bar too, and
+ *  polled rather than pushed so the UI owns its own repaint timing.
+ * =================================================================== */
+static lv_obj_t   *s_ota_overlay;
+static lv_obj_t   *s_ota_pct_lbl;
+static lv_obj_t   *s_ota_bar;
+static lv_timer_t *s_ota_timer;
+
+static void ota_overlay_build(void)
+{
+    s_ota_overlay = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_ota_overlay);
+    lv_obj_set_size(s_ota_overlay, 800, 480);
+    lv_obj_set_pos(s_ota_overlay, 0, 0);
+    lv_obj_set_style_bg_color(s_ota_overlay, hex(UI_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(s_ota_overlay, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(s_ota_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_ota_overlay, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *title = lv_label_create(s_ota_overlay);
+    lv_label_set_text(title, "Updating firmware");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(title, hex(UI_COLOR_TEXT), 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, -70);
+
+    s_ota_pct_lbl = lv_label_create(s_ota_overlay);
+    lv_label_set_text(s_ota_pct_lbl, "0%");
+    lv_obj_set_style_text_font(s_ota_pct_lbl, &lv_font_montserrat_40, 0);
+    lv_obj_set_style_text_color(s_ota_pct_lbl, hex(UI_COLOR_TAB), 0);
+    lv_obj_align(s_ota_pct_lbl, LV_ALIGN_CENTER, 0, -20);
+
+    s_ota_bar = lv_bar_create(s_ota_overlay);
+    lv_obj_set_size(s_ota_bar, 420, 8);
+    lv_obj_align(s_ota_bar, LV_ALIGN_CENTER, 0, 30);
+    lv_bar_set_range(s_ota_bar, 0, 100);
+    lv_bar_set_value(s_ota_bar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(s_ota_bar, hex(UI_COLOR_SURFACE_LO), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_ota_bar, hex(UI_COLOR_TAB), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(s_ota_bar, 4, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_ota_bar, 4, LV_PART_INDICATOR);
+
+    lv_obj_t *warn = lv_label_create(s_ota_overlay);
+    lv_label_set_text(warn,
+        "Do not switch off the power.\n"
+        "The display will restart on its own when the update finishes.");
+    lv_obj_set_style_text_font(warn, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(warn, hex(UI_COLOR_MUTED), 0);
+    lv_obj_set_style_text_align(warn, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(warn, LV_ALIGN_CENTER, 0, 80);
+}
+
+static void ota_overlay_tick(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_ota_overlay) return;
+    int pct = hyperwisor_ota_get_progress();
+
+    if (pct < 0) {
+        if (!lv_obj_has_flag(s_ota_overlay, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_add_flag(s_ota_overlay, LV_OBJ_FLAG_HIDDEN);
+            ESP_LOGI(TAG, "OTA overlay down");
+        }
+        return;
+    }
+
+    if (lv_obj_has_flag(s_ota_overlay, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_clear_flag(s_ota_overlay, LV_OBJ_FLAG_HIDDEN);
+        ESP_LOGI(TAG, "OTA overlay up");
+    }
+    /* pct is 0..100 from the OTA module, but the compiler only knows it
+     * is an int -- size the buffer for the full range so the truncation
+     * warning stays honest rather than suppressed. */
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d%%", pct);
+    lv_label_set_text(s_ota_pct_lbl, buf);
+    lv_bar_set_value(s_ota_bar, pct, LV_ANIM_OFF);
+}
+
 void ui_shell_build(lv_obj_t *scr)
 {
     lv_obj_set_style_bg_color(scr, hex(UI_COLOR_BG), 0);
@@ -157,4 +242,9 @@ void ui_shell_build(lv_obj_t *scr)
 
     s_active = -1;
     switch_tab(DEFAULT_TAB);
+
+    /* Lives for the life of the UI -- the shell is never torn down, so
+     * no delete hook is needed here (unlike the per-tab timers). */
+    ota_overlay_build();
+    s_ota_timer = lv_timer_create(ota_overlay_tick, 500, NULL);
 }
