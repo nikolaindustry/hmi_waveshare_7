@@ -15,13 +15,6 @@ sdkconfig.old
 *.elf
 *.map
 
-# Transcoded dashboards. Generated from a Hyperwisor export by
-# tools/hds_transcode.py (see ./dashboard.sh) and flashed to the
-# `storage` partition. Per-customer output, not source -- and the
-# *.bin rule above would exclude its image blobs anyway, leaving a
-# spec that references assets which are not there.
-assets/dashboard/
-
 # Logs & debug captures
 *.log
 *.txt

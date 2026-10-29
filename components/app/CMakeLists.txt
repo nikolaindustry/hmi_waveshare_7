@@ -33,12 +33,6 @@ idf_component_register(
         "bus_config/bus_config.c"
         "cloud/hyperwisor_app.c"
         "cloud/board_s3.c"
-        "cloud/hds_sink.c"
-        "hds/hds_spec.c"
-        "hds/hds_inject.c"
-        "hds/hds_assets.c"
-        "hds/hds_widget.c"
-        "hds/hds_render.c"
     INCLUDE_DIRS
         "include"
         "ui"
@@ -50,7 +44,6 @@ idf_component_register(
         "hmi_link"
         "bus_config"
         "cloud"
-        "hds"
     REQUIRES
         bsp_s3_rgb
         lvgl
@@ -60,8 +53,6 @@ idf_component_register(
         esp_wifi
         esp_netif
         esp_event
-        json
-        spiffs
     PRIV_REQUIRES
         esp_driver_uart
         esp_driver_i2c
