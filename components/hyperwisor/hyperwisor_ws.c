@@ -7,6 +7,7 @@
 #include "esp_websocket_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_random.h"
 #include <string.h>
 #include <stdio.h>
@@ -19,6 +20,19 @@ static hyperwisor_ws_msg_cb_t s_msg_cb = NULL;
 static hyperwisor_ws_conn_cb_t s_conn_cb = NULL;
 static bool s_ws_connected = false;
 static int s_reconnect_attempt = 0;  /* For exponential backoff tracking */
+
+/* Deferred teardown.
+ *
+ * esp_websocket_client forbids stopping or destroying the client from
+ * inside its own event callback -- the callback runs on the websocket
+ * task, and destroy() tears down the event loop that task is currently
+ * executing inside. Doing it anyway logs "Client cannot be stopped from
+ * websocket task" and then panics in spinlock_acquire() once the abort
+ * path re-enters the half-freed loop. The DISCONNECTED handler therefore
+ * only raises this flag; hyperwisor_ws_service(), called from the core
+ * task, does the actual stop/destroy where it is legal. */
+static volatile bool s_teardown_pending = false;
+static int64_t       s_reconnect_after_us = 0;
 
 /* HSC v1 handshake state */
 static bool s_hsc_enabled = false;
@@ -120,14 +134,12 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
             delay_ms += (esp_random() % base);
             ESP_LOGI(TAG, "Next reconnect in %d ms (backoff attempt %d)", delay_ms, s_reconnect_attempt + 1);
 
-            /* Destroy current client and set flag so core task recreates
-             * with the new timeout. The reconnect delay is achieved by
-             * the core task waiting before calling ws_connect again. */
-            if (s_ws_client) {
-                esp_websocket_client_stop(s_ws_client);
-                esp_websocket_client_destroy(s_ws_client);
-                s_ws_client = NULL;
-            }
+            /* Hand the teardown to the core task -- see s_teardown_pending.
+             * Doing it here would destroy the client from its own task and
+             * panic the board, which is exactly what used to happen every
+             * time the relay dropped the connection. */
+            s_reconnect_after_us = esp_timer_get_time() + (int64_t)delay_ms * 1000;
+            s_teardown_pending   = true;
             s_reconnect_attempt++;
         }
         if (s_conn_cb) {
@@ -227,6 +239,26 @@ esp_err_t hyperwisor_ws_connect(const char *uri)
 
     ESP_LOGI(TAG, "Connecting to %s...", uri);
     return ESP_OK;
+}
+
+/* Called once per core-task tick. Performs any teardown the websocket
+ * task asked for, from a context where stop/destroy is legal. */
+void hyperwisor_ws_service(void)
+{
+    if (!s_teardown_pending) return;
+    s_teardown_pending = false;
+    if (s_ws_client) {
+        esp_websocket_client_stop(s_ws_client);
+        esp_websocket_client_destroy(s_ws_client);
+        s_ws_client = NULL;
+        ESP_LOGI(TAG, "client torn down; reconnect when backoff expires");
+    }
+}
+
+/* False while the backoff window from the last disconnect is still open. */
+bool hyperwisor_ws_reconnect_due(void)
+{
+    return esp_timer_get_time() >= s_reconnect_after_us;
 }
 
 void hyperwisor_ws_disconnect(void)

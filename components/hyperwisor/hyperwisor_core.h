@@ -43,6 +43,13 @@ typedef struct {
     char version[16];
 
     bool wifi_connected;
+    /* True only once DHCP has handed us an address. wifi_connected goes
+     * true at association, ~850 ms earlier, and DNS cannot resolve in
+     * that window -- starting the WebSocket client there makes it fail
+     * and take the esp_websocket_client abort path, which asserts.
+     * Anything that needs the network must gate on this, not on
+     * wifi_connected. */
+    bool ip_ready;
     bool ws_connected;
     bool ap_mode_active;
     bool ntp_initialized;

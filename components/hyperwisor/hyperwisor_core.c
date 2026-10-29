@@ -365,8 +365,26 @@ void hyperwisor_task(void *pvParam)
          * the client it will keep retrying on its own. If we instead
          * destroyed + recreated on every disconnect (as the old check
          * `!is_connected` did), we'd race the WS lib's internal event
-         * loop and crash with a spinlock assert. */
-        if (s_state.wifi_connected && !hyperwisor_ws_is_started() &&
+         * loop and crash with a spinlock assert.
+         *
+         * Gate on ip_ready, NOT wifi_connected. wifi_connected is set at
+         * association; DHCP lands ~850 ms later. In that window this loop
+         * beat the GOT_IP handler below, started the client with no
+         * resolver, and getaddrinfo() failed -- which sends the client
+         * down esp_websocket_client_abort_connection(), and that path
+         * asserts in spinlock_acquire() on the pinned 1.5.0 build and
+         * panics the whole board. It is a race, so it only bricks the
+         * boot about half the time, which is what made it look like a
+         * random restart loop. */
+        /* Complete any teardown the websocket task deferred to us. It
+         * cannot stop or destroy its own client without panicking, so
+         * this is the only place that is allowed to. Must run before the
+         * is_started() check below, or the stale handle would block the
+         * reconnect forever. */
+        hyperwisor_ws_service();
+
+        if (s_state.ip_ready && !hyperwisor_ws_is_started() &&
+            hyperwisor_ws_reconnect_due() &&
             strlen(s_state.device_id) > 0
 #if CONFIG_HYPERWISOR_ENABLE_OTA
             && !hyperwisor_ota_is_in_progress()
@@ -454,16 +472,19 @@ static void on_wifi_event(hyperwisor_wifi_event_t evt, void *data)
     case HYPERWISOR_WIFI_EVT_DISCONNECTED:
         ESP_LOGW(TAG, "WiFi disconnected");
         s_state.wifi_connected = false;
+        s_state.ip_ready       = false;
         s_state.ws_connected = false;
         hyperwisor_ws_disconnect();
         break;
 
     case HYPERWISOR_WIFI_EVT_GOT_IP:
         ESP_LOGI(TAG, "Got IP address");
-        if (strlen(s_state.device_id) > 0) {
-            hyperwisor_ws_connect_with_device_id(
-                CONFIG_HYPERWISOR_WS_HOST, CONFIG_HYPERWISOR_WS_PORT, s_state.device_id);
-        }
+        /* Only raise the flag -- the main task owns starting the client.
+         * This used to call hyperwisor_ws_connect_with_device_id() too,
+         * so there were two independent start paths with no shared
+         * "already started" guard between them. One owner, checked once
+         * per second against ws_is_started(), cannot double-create. */
+        s_state.ip_ready = true;
         break;
 
     case HYPERWISOR_WIFI_EVT_AP_START:

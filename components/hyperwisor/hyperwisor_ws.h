@@ -45,6 +45,13 @@ esp_err_t hyperwisor_ws_send_json(cJSON *json);
 bool      hyperwisor_ws_is_connected(void);
 bool      hyperwisor_ws_is_started(void);
 
+/* Call once per core-task tick. Completes any client teardown the
+ * websocket task deferred (it may not stop/destroy itself). */
+void      hyperwisor_ws_service(void);
+
+/* False while the post-disconnect backoff window is still open. */
+bool      hyperwisor_ws_reconnect_due(void);
+
 #ifdef __cplusplus
 }
 #endif
