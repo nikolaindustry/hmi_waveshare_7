@@ -19,7 +19,7 @@ sdkconfig.old
 *.log
 *.txt
 !CMakeLists.txt
-!partitions.csv
+!partitions_ota.csv
 !sdkconfig.defaults
 cap.py
 serial_log.ps1

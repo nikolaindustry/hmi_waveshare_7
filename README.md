@@ -85,7 +85,7 @@ idf.py -p COM4 monitor
 ├── slave_rgb_arduino/        # Arduino sketch for the ATmega RGB slave (addr 0x20)
 ├── assets/                   # Source images converted to C arrays
 ├── scripts/                  # Logo conversion utility
-├── partitions.csv            # 16 MB partition table (4 MB app, 2 MB SPIFFS)
+├── partitions_ota.csv        # 16 MB partition table (2 x 3.5 MB OTA app, 2 MB SPIFFS)
 └── sdkconfig.defaults        # Baseline Kconfig overrides
 ```
 
