@@ -110,6 +110,30 @@ esp_err_t hyperwisor_wifi_connect(const char *ssid, const char *pass)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
+    /* Keep the radio awake. This is the actual cause of the relay churn.
+     *
+     * esp_wifi_set_ps() was never called, so the station ran on IDF's default
+     * WIFI_PS_MIN_MODEM -- modem sleep, waking only for DTIM beacons. On a busy
+     * 2.4 GHz band, or behind an AP with a long DTIM, beacons get missed, and
+     * the serial log showed exactly that:
+     *
+     *   wifi:bcn_timeout,ap_probe_send_start
+     *   wifi:ap_probe_send over, reset wifi status to disassoc
+     *   wifi:state: run -> init (0xc800)
+     *
+     * followed by HYPER_CORE: WiFi disconnected. Every "the HMI keeps
+     * reconnecting to the relay" symptom was this, one layer down: the socket
+     * dies because the LINK dies, which is why the pings and the data stopped
+     * at the same instant and why no amount of websocket tuning moved it.
+     *
+     * There is nothing to save here. This is a mains-powered panel driving a
+     * 7-inch RGB LCD; the display costs orders of magnitude more than the
+     * radio, so trading beacon reliability for modem sleep buys nothing and
+     * costs the connection. Battery-powered designs on this component should
+     * reconsider it -- hence the explicit call rather than relying on a
+     * default either way. */
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+
     /* Save credentials */
     hyperwisor_nvs_set_str("ssid", ssid);
     hyperwisor_nvs_set_str("pass", pass);
