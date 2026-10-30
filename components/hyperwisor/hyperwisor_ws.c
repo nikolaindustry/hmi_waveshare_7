@@ -81,19 +81,20 @@ static bool hsc_try_keepalive(const char *data, int len)
         if (cJSON_IsNumber(jts)) cJSON_AddNumberToObject(out, "ts", jts->valuedouble);
         esp_err_t err = hyperwisor_ws_send_json(out);
         cJSON_Delete(out);
-        /* Temporary: the relay reported idle=99s on every drop, meaning it
-         * received nothing from this device for 99 seconds -- so either the
-         * keepalive never arrived or this reply never left. One line says
-         * which. Remove once the answer is known. */
-        /* Radio state sampled at the moment delivery matters. The device's
-         * writes return success and do not arrive: it answers five keepalives
-         * and the relay records almost nothing inbound, then lwIP gives up
-         * after ~96s with ECONNRESET. Inbound still works throughout, so this
-         * is asymmetric -- which points at TX, and RSSI is the first thing to
-         * rule in or out. */
+        /* Kept at DEBUG rather than deleted. Two things were established with
+         * this line and both are worth being able to re-check without
+         * rewriting it: the device DOES answer the relay's keepalive (err=0,
+         * every 20s), and the radio is healthy while connections die
+         * (-21..-31 dBm). It also stops anyone re-reading the relay's `idle`
+         * figure as "the device went quiet" -- that figure is time since the
+         * connection broke, not evidence of missing frames.
+         *
+         * Still unexplained as of 2026-10-30: a TCP RST neither end sends,
+         * roughly every 90s. Raise this to INFO and watch alongside the relay
+         * log when picking that up again. */
         wifi_ap_record_t ap;
         int rssi = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) ? ap.rssi : 0;
-        ESP_LOGW(TAG, "keepalive: replied pong (err=%d) rssi=%d ch=%u",
+        ESP_LOGD(TAG, "keepalive: replied pong (err=%d) rssi=%d ch=%u",
                  (int)err, rssi, (unsigned)ap.primary);
     }
 
