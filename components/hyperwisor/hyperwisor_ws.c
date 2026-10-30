@@ -51,6 +51,41 @@ void hyperwisor_ws_enable_hsc(hyperwisor_ws_signer_cb_t signer, const char *devi
     ESP_LOGI(TAG, "HSC: handshake enabled");
 }
 
+/* The relay's application-level keepalive, answered in EVERY auth state.
+ *
+ * Returns true when the frame was a keepalive and has been consumed, so the
+ * caller does not pass it on to the application as device data.
+ *
+ * This cannot live in hsc_handle_data(): that only runs BEFORE auth_ok, and
+ * the keepalive arrives for the whole life of an authenticated connection.
+ *
+ * Answering matters because of direction. A NAT mapping is refreshed by
+ * traffic going OUT, not by the relay sending frames in -- which is why the
+ * relay's own 20s keepalive changed nothing on its own (2026-10-30). The reply
+ * is a real data frame, and the relay clears its miss counter on any inbound
+ * message, so it is liveness that does not depend on ping/pong control frames
+ * surviving the trip. */
+static bool hsc_try_keepalive(const char *data, int len)
+{
+    cJSON *root = cJSON_ParseWithLength(data, len);
+    if (!root) return false;
+
+    const cJSON *type = cJSON_GetObjectItem(root, "type");
+    bool is_ping = cJSON_IsString(type) && strcmp(type->valuestring, "ping") == 0;
+    if (is_ping) {
+        cJSON *out = cJSON_CreateObject();
+        cJSON_AddStringToObject(out, "hsc", "1");
+        cJSON_AddStringToObject(out, "type", "pong");
+        const cJSON *jts = cJSON_GetObjectItem(root, "ts");
+        if (cJSON_IsNumber(jts)) cJSON_AddNumberToObject(out, "ts", jts->valuedouble);
+        hyperwisor_ws_send_json(out);
+        cJSON_Delete(out);
+    }
+
+    cJSON_Delete(root);
+    return is_ping;
+}
+
 /* Handle an HSC control frame (challenge / auth_ok / auth_fail). */
 static void hsc_handle_data(const char *data, int len)
 {
@@ -149,6 +184,11 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
 
     case WEBSOCKET_EVENT_DATA:
         if (data->op_code == WS_TRANSPORT_OPCODES_TEXT) {
+            /* Keepalive first, in any auth state, and never forwarded to the
+             * application -- it is liveness, not device data. */
+            if (hsc_try_keepalive(data->data_ptr, data->data_len)) {
+                break;
+            }
             if (s_hsc_enabled && !s_authenticated) {
                 /* Before auth: only handshake frames are processed; drop the rest. */
                 hsc_handle_data(data->data_ptr, data->data_len);
@@ -198,10 +238,19 @@ esp_err_t hyperwisor_ws_connect(const char *uri)
          * ~2.5 KB and ECDSA sig verify pushes another ~2 KB of locals).
          * 8 KB is the minimum that completes the handshake cleanly. */
         .task_stack = 8192,
+        /* WebSocket PING, on the websocket itself. Set explicitly rather than
+         * left to the library default, because this is the frame the relay
+         * counts as proof of life and the one that refreshes the NAT mapping
+         * on the way out. Quiet connections were being dropped without it. */
+        .ping_interval_sec = HYPERWISOR_WS_PING_INTERVAL_MS / 1000,
+        .pingpong_timeout_sec = HYPERWISOR_WS_PONG_TIMEOUT_MS / 1000,
+        /* TCP keepalive, underneath the websocket. A DIFFERENT layer from the
+         * two lines above despite the similar names -- see hyperwisor_ws.h for
+         * why these numbers are no longer 15/3/2. */
         .keep_alive_enable = true,
-        .keep_alive_idle = HYPERWISOR_WS_PING_INTERVAL_MS / 1000,
-        .keep_alive_interval = HYPERWISOR_WS_PONG_TIMEOUT_MS / 1000,
-        .keep_alive_count = HYPERWISOR_WS_PONG_FAIL_COUNT,
+        .keep_alive_idle = HYPERWISOR_WS_TCP_KEEPALIVE_IDLE_S,
+        .keep_alive_interval = HYPERWISOR_WS_TCP_KEEPALIVE_INTERVAL_S,
+        .keep_alive_count = HYPERWISOR_WS_TCP_KEEPALIVE_COUNT,
         /* Attach IDF's bundled CA store so TLS can verify the
          * Google Trust Services ECDSA chain presented by *.onrender.com.
          *
