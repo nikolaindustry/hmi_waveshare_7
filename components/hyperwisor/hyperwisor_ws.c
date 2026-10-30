@@ -7,6 +7,7 @@
 #include "esp_websocket_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
+#include "esp_wifi.h"
 #include "esp_timer.h"
 #include "esp_random.h"
 #include <string.h>
@@ -78,8 +79,22 @@ static bool hsc_try_keepalive(const char *data, int len)
         cJSON_AddStringToObject(out, "type", "pong");
         const cJSON *jts = cJSON_GetObjectItem(root, "ts");
         if (cJSON_IsNumber(jts)) cJSON_AddNumberToObject(out, "ts", jts->valuedouble);
-        hyperwisor_ws_send_json(out);
+        esp_err_t err = hyperwisor_ws_send_json(out);
         cJSON_Delete(out);
+        /* Temporary: the relay reported idle=99s on every drop, meaning it
+         * received nothing from this device for 99 seconds -- so either the
+         * keepalive never arrived or this reply never left. One line says
+         * which. Remove once the answer is known. */
+        /* Radio state sampled at the moment delivery matters. The device's
+         * writes return success and do not arrive: it answers five keepalives
+         * and the relay records almost nothing inbound, then lwIP gives up
+         * after ~96s with ECONNRESET. Inbound still works throughout, so this
+         * is asymmetric -- which points at TX, and RSSI is the first thing to
+         * rule in or out. */
+        wifi_ap_record_t ap;
+        int rssi = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) ? ap.rssi : 0;
+        ESP_LOGW(TAG, "keepalive: replied pong (err=%d) rssi=%d ch=%u",
+                 (int)err, rssi, (unsigned)ap.primary);
     }
 
     cJSON_Delete(root);
