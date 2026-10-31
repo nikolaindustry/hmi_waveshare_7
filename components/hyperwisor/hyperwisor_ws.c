@@ -213,11 +213,37 @@ static void schedule_reconnect(const char *why)
         s_reconnect_attempt = 0;
     } else {
         int base = HYPERWISOR_WS_RECONNECT_MS;
-        delay_ms = base << s_reconnect_attempt;   /* base * 2^attempt */
-        if (delay_ms > HYPERWISOR_WS_RECONNECT_MAX_MS) {
-            delay_ms = HYPERWISOR_WS_RECONNECT_MAX_MS;
+        int target = base << s_reconnect_attempt;  /* base * 2^attempt */
+        if (target > HYPERWISOR_WS_RECONNECT_MAX_MS) {
+            target = HYPERWISOR_WS_RECONNECT_MAX_MS;
         }
-        delay_ms += (int)(esp_random() % base);   /* jitter 0..base */
+
+        /* Spread the retry across a window as wide as the wait itself:
+         * a random point in [target/2, target*3/2).
+         *
+         * The jitter used to be a flat 0..base -- always 0-5s, however long
+         * the backoff had grown. That is fine for one device and fatal for a
+         * fleet: after anything that drops everyone at once, every device in
+         * the field retries inside the same 5 second window. At 300k devices
+         * that is 60,000 connection attempts per second, each one a TLS
+         * handshake and a P-256 verify, and the retry storm feeds itself --
+         * the server fails, they all retry, it fails harder.
+         *
+         * Scaling the window with the delay puts the widest spread exactly
+         * where it is needed: a long backoff means a long outage, which means
+         * the biggest herd. At the 60s cap, 300k devices spread over 60s is
+         * 5,000/s rather than 60,000/s.
+         *
+         * It is also FASTER in the common case. A single device recovering
+         * from a blip is on attempt 0, which is now 2.5-7.5s instead of the
+         * old 5-10s, and a successful connect resets the attempt counter -- so
+         * the wide windows only ever apply to a device that has already been
+         * failing for minutes, where nobody is watching the difference between
+         * 60 and 90 seconds.
+         *
+         * This buys survivable, not free. 5,000/s is still real work; the
+         * relay has to be horizontally scalable to absorb it. */
+        delay_ms = target / 2 + (int)(esp_random() % (unsigned)target);
         s_reconnect_attempt++;
     }
 
