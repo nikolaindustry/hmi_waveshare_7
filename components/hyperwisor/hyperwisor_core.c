@@ -32,7 +32,6 @@ static TaskHandle_t s_hyper_task = NULL;
 static hyperwisor_user_msg_cb_t s_user_msg_cb = NULL;
 static uint32_t s_ap_start_time = 0;
 static bool s_ap_started = false;
-static hyperwisor_prov_state_t s_last_prov_state = HYPERWISOR_PROV_IDLE;
 static SemaphoreHandle_t s_state_mutex = NULL;  /* Protects s_state */
 #if CONFIG_HYPERWISOR_ENABLE_OTA
 static bool s_ota_report_pending = false;       /* Send OTA success on WS connect */
@@ -130,19 +129,6 @@ esp_err_t hyperwisor_init(void)
     /* Auto-register the SYSTEM command handler (restart, status, info). */
     hyperwisor_register_cmd_handler("SYSTEM", hyperwisor_cmd_handle_system);
 #endif
-
-    /* DEVICE_STATUS answers "are you there?" and belongs to the library, not
-     * to the application.
-     *
-     * The handler existed and was documented as built-in, but nothing
-     * registered it -- so every device built on this component answered
-     * "Unknown command" to a liveness probe unless its author happened to know
-     * the handler was there and wired it up. Asking a device whether it is
-     * alive is not an application concern; a device that cannot answer that is
-     * simply broken, and the foundation should not let you build one.
-     *
-     * Not behind a Kconfig gate for the same reason. */
-    hyperwisor_register_cmd_handler("DEVICE_STATUS", hyperwisor_cmd_handle_device_status);
 
     ESP_LOGI(TAG, "Hyperwisor core initialized");
     return ESP_OK;
@@ -356,7 +342,7 @@ esp_err_t hyperwisor_enable_security(void)
         return err;
     }
     hyperwisor_ws_enable_hsc(hsc_signer_bridge, s_state.device_id);
-    ESP_LOGI(TAG, "Security enabled — device will authenticate to the HSC");
+    ESP_LOGI(TAG, "Security enabled — device will authenticate to the secured relay");
     return ESP_OK;
 }
 
@@ -409,23 +395,7 @@ void hyperwisor_task(void *pvParam)
                 CONFIG_HYPERWISOR_WS_HOST, CONFIG_HYPERWISOR_WS_PORT, s_state.device_id);
         }
 
-        /* AP mode timeout: reboot after 4 minutes if still in AP.
-         *
-         * Hold the clock while a provisioning trial is in flight, and restart
-         * it after one finishes. The trial brings the station up alongside the
-         * AP and reports the verdict on the setup page, so rebooting through
-         * that would take the page away at the moment it has something to say
-         * -- and a person who has just been told their password was wrong
-         * needs time to type another one. */
-        if (s_ap_started) {
-            hyperwisor_prov_state_t pst = hyperwisor_wifi_prov_state();
-            if (pst == HYPERWISOR_PROV_TRYING) {
-                s_ap_start_time = s_state.uptime_seconds;
-            } else if (pst != s_last_prov_state) {
-                s_last_prov_state = pst;
-                s_ap_start_time = s_state.uptime_seconds;
-            }
-        }
+        /* AP mode timeout: reboot after 4 minutes if still in AP */
         if (s_state.ap_mode_active && s_ap_started) {
             if (s_state.uptime_seconds - s_ap_start_time > 240) {
                 ESP_LOGW(TAG, "Stuck in AP mode too long. Rebooting...");
