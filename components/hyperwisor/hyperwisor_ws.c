@@ -22,6 +22,12 @@ static hyperwisor_ws_conn_cb_t s_conn_cb = NULL;
 static bool s_ws_connected = false;
 static int s_reconnect_attempt = 0;  /* For exponential backoff tracking */
 
+/* True when the LAST thing the server told us was that it does not know who we
+ * are. Cleared on auth_ok. Decides whether the next reconnect is a short fixed
+ * retry (our credentials are probably moments away) or the exponential backoff
+ * (the host itself is unhappy). */
+static bool s_auth_rejected = false;
+
 /* Deferred teardown.
  *
  * esp_websocket_client forbids stopping or destroying the client from
@@ -38,6 +44,22 @@ static int64_t       s_reconnect_after_us = 0;
 /* HSC v1 handshake state */
 static bool s_hsc_enabled = false;
 static bool s_authenticated = false;
+static bool s_warned_pre_auth_send = false;
+
+/* Send without the pre-auth gate.
+ *
+ * The gate in hyperwisor_ws_send() exists to stop APPLICATION frames leaving
+ * before the handshake finishes. The handshake's own frames are the exception
+ * and have to be, because they are what ends that state: the auth reply is by
+ * definition sent while unauthenticated, so routing it through the gate drops
+ * the one frame that would open it -- the device signs the challenge, the
+ * frame never leaves, and the server closes on its auth timeout five seconds
+ * later. The keepalive reply is the same: the comment on it says it is
+ * answered in EVERY auth state, and the gate silently made that untrue.
+ *
+ * Both took the gated path, which is why a device could sit reconnecting
+ * forever while its log claimed it had sent auth. */
+static esp_err_t ws_send_raw_json(cJSON *json);
 static hyperwisor_ws_signer_cb_t s_signer = NULL;
 static char s_device_id[64] = {0};
 
@@ -52,7 +74,7 @@ void hyperwisor_ws_enable_hsc(hyperwisor_ws_signer_cb_t signer, const char *devi
     ESP_LOGI(TAG, "HSC: handshake enabled");
 }
 
-/* The relay's application-level keepalive, answered in EVERY auth state.
+/* The HSC's application-level keepalive, answered in EVERY auth state.
  *
  * Returns true when the frame was a keepalive and has been consumed, so the
  * caller does not pass it on to the application as device data.
@@ -61,9 +83,9 @@ void hyperwisor_ws_enable_hsc(hyperwisor_ws_signer_cb_t signer, const char *devi
  * the keepalive arrives for the whole life of an authenticated connection.
  *
  * Answering matters because of direction. A NAT mapping is refreshed by
- * traffic going OUT, not by the relay sending frames in -- which is why the
- * relay's own 20s keepalive changed nothing on its own (2026-10-30). The reply
- * is a real data frame, and the relay clears its miss counter on any inbound
+ * traffic going OUT, not by the HSC sending frames in -- which is why the
+ * HSC's own 20s keepalive changed nothing on its own (2026-10-30). The reply
+ * is a real data frame, and the HSC clears its miss counter on any inbound
  * message, so it is liveness that does not depend on ping/pong control frames
  * surviving the trip. */
 static bool hsc_try_keepalive(const char *data, int len)
@@ -79,18 +101,20 @@ static bool hsc_try_keepalive(const char *data, int len)
         cJSON_AddStringToObject(out, "type", "pong");
         const cJSON *jts = cJSON_GetObjectItem(root, "ts");
         if (cJSON_IsNumber(jts)) cJSON_AddNumberToObject(out, "ts", jts->valuedouble);
-        esp_err_t err = hyperwisor_ws_send_json(out);
+        /* Raw: this must be answered in EVERY auth state, which is the whole
+         * point of it, and the pre-auth gate would have swallowed it. */
+        esp_err_t err = ws_send_raw_json(out);
         cJSON_Delete(out);
         /* Kept at DEBUG rather than deleted. Two things were established with
          * this line and both are worth being able to re-check without
-         * rewriting it: the device DOES answer the relay's keepalive (err=0,
+         * rewriting it: the device DOES answer the HSC's keepalive (err=0,
          * every 20s), and the radio is healthy while connections die
-         * (-21..-31 dBm). It also stops anyone re-reading the relay's `idle`
+         * (-21..-31 dBm). It also stops anyone re-reading the HSC's `idle`
          * figure as "the device went quiet" -- that figure is time since the
          * connection broke, not evidence of missing frames.
          *
          * Still unexplained as of 2026-10-30: a TCP RST neither end sends,
-         * roughly every 90s. Raise this to INFO and watch alongside the relay
+         * roughly every 90s. Raise this to INFO and watch alongside the HSC
          * log when picking that up again. */
         wifi_ap_record_t ap;
         int rssi = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) ? ap.rssi : 0;
@@ -128,22 +152,84 @@ static void hsc_handle_data(const char *data, int len)
             cJSON_AddStringToObject(out, "type", "auth");
             cJSON_AddStringToObject(out, "deviceId", s_device_id);
             cJSON_AddStringToObject(out, "sig", sig);
-            hyperwisor_ws_send_json(out);
+            esp_err_t aerr = ws_send_raw_json(out);
             cJSON_Delete(out);
-            ESP_LOGI(TAG, "HSC: signed challenge -> sent auth");
+            if (aerr == ESP_OK) {
+                ESP_LOGI(TAG, "HSC: signed challenge -> sent auth");
+            } else {
+                /* Said "sent auth" unconditionally before, so a frame that
+                 * never left still read as success in the log. */
+                ESP_LOGE(TAG, "HSC: auth frame failed to send: %s",
+                         esp_err_to_name(aerr));
+            }
         } else {
             ESP_LOGE(TAG, "HSC: signing failed");
         }
     } else if (strcmp(t, "auth_ok") == 0) {
         s_authenticated = true;
+        s_auth_rejected = false;
+        s_warned_pre_auth_send = false;
         ESP_LOGI(TAG, "HSC: authenticated");
         if (s_conn_cb) s_conn_cb(true);
     } else if (strcmp(t, "auth_fail") == 0) {
         const cJSON *reason = cJSON_GetObjectItem(root, "reason");
         ESP_LOGE(TAG, "HSC: auth rejected: %s",
                  cJSON_IsString(reason) ? reason->valuestring : "unknown");
+        /* The server closes right after this, cleanly. Remember why, so the
+         * close handler retries soon instead of backing off -- and so the
+         * reason appears in the log next to the retry rather than minutes
+         * earlier, where nobody connects the two. */
+        s_auth_rejected = true;
     }
     cJSON_Delete(root);
+}
+
+/* One reconnect path for every way a connection can end.
+ *
+ * Two cases, deliberately different:
+ *
+ *   rejected  The server answered and said it does not know us. That is almost
+ *             always onboarding in flight -- the credential row lands seconds
+ *             later -- so retry soon and do NOT escalate. Backing off here
+ *             means the device is asleep at the one moment it could succeed.
+ *
+ *   anything  The host is unreachable or the link broke. Exponential backoff
+ *   else      with jitter, so a fleet coming back after an outage does not
+ *             arrive as one wave.
+ *
+ * The teardown itself is deferred: esp_websocket_client forbids destroying the
+ * client from inside its own callback. See s_teardown_pending.
+ */
+static void schedule_reconnect(const char *why)
+{
+    s_ws_connected = false;
+    s_authenticated = false;
+
+    int delay_ms;
+    if (s_auth_rejected) {
+        /* Constant, with a little jitter so a rack of devices provisioned
+         * together does not retry in lockstep. */
+        delay_ms = HYPERWISOR_WS_AUTH_RETRY_MS + (int)(esp_random() % 1000);
+        s_reconnect_attempt = 0;
+    } else {
+        int base = HYPERWISOR_WS_RECONNECT_MS;
+        delay_ms = base << s_reconnect_attempt;   /* base * 2^attempt */
+        if (delay_ms > HYPERWISOR_WS_RECONNECT_MAX_MS) {
+            delay_ms = HYPERWISOR_WS_RECONNECT_MAX_MS;
+        }
+        delay_ms += (int)(esp_random() % base);   /* jitter 0..base */
+        s_reconnect_attempt++;
+    }
+
+    ESP_LOGI(TAG, "Next reconnect in %d ms (%s, attempt %d)",
+             delay_ms, why, s_reconnect_attempt);
+
+    s_reconnect_after_us = esp_timer_get_time() + (int64_t)delay_ms * 1000;
+    s_teardown_pending   = true;
+
+    if (s_conn_cb) {
+        s_conn_cb(false);
+    }
 }
 
 static void ws_event_handler(void *handler_args, esp_event_base_t base,
@@ -166,36 +252,30 @@ static void ws_event_handler(void *handler_args, esp_event_base_t base,
         break;
 
     case WEBSOCKET_EVENT_DISCONNECTED:
+        /* The link failed under us. */
         ESP_LOGW(TAG, "WebSocket disconnected (attempt %d)", s_reconnect_attempt + 1);
-        s_ws_connected = false;
-        s_authenticated = false;
-        /* Exponential backoff with jitter:
-         * delay = min(base * 2^attempt, max) + random(0, base)
-         * This avoids thundering herd when many devices disconnect simultaneously.
-         * The esp_websocket_client library handles reconnection automatically
-         * using the reconnect_timeout_ms we set at creation time. For backoff,
-         * we destroy the old client and recreate with a longer timeout. */
-        {
-            int base = HYPERWISOR_WS_RECONNECT_MS;
-            int delay_ms = base << s_reconnect_attempt;  /* base * 2^attempt */
-            if (delay_ms > HYPERWISOR_WS_RECONNECT_MAX_MS) {
-                delay_ms = HYPERWISOR_WS_RECONNECT_MAX_MS;
-            }
-            /* Add random jitter: 0..base ms */
-            delay_ms += (esp_random() % base);
-            ESP_LOGI(TAG, "Next reconnect in %d ms (backoff attempt %d)", delay_ms, s_reconnect_attempt + 1);
+        schedule_reconnect("disconnected");
+        break;
 
-            /* Hand the teardown to the core task -- see s_teardown_pending.
-             * Doing it here would destroy the client from its own task and
-             * panic the board, which is exactly what used to happen every
-             * time the relay dropped the connection. */
-            s_reconnect_after_us = esp_timer_get_time() + (int64_t)delay_ms * 1000;
-            s_teardown_pending   = true;
-            s_reconnect_attempt++;
-        }
-        if (s_conn_cb) {
-            s_conn_cb(false);
-        }
+    case WEBSOCKET_EVENT_CLOSED:
+        /* The peer closed cleanly -- which is what the HSC does when it will
+         * not have us: auth_fail, then close 4401.
+         *
+         * This case did not exist, and esp_websocket_client raises CLOSED for a
+         * graceful close and DISCONNECTED only for a broken one. So a rejected
+         * device fell through the switch entirely: no teardown was scheduled,
+         * the client was never destroyed, and hyperwisor_ws_is_started() --
+         * which is just s_ws_client != NULL -- stayed true forever. The core
+         * task only reconnects when the client is NOT started, so it never
+         * tried again. A device provisioned a few seconds before its key
+         * reached the platform would sit there, connected to nothing, until
+         * someone power-cycled it. That is exactly what was happening.
+         *
+         * Same path as a dropped link; only the delay differs, and
+         * schedule_reconnect() decides that from s_auth_rejected. */
+        ESP_LOGW(TAG, "WebSocket closed by peer%s",
+                 s_auth_rejected ? " (identity rejected)" : "");
+        schedule_reconnect(s_auth_rejected ? "rejected" : "closed");
         break;
 
     case WEBSOCKET_EVENT_DATA:
@@ -255,7 +335,7 @@ esp_err_t hyperwisor_ws_connect(const char *uri)
          * 8 KB is the minimum that completes the handshake cleanly. */
         .task_stack = 8192,
         /* WebSocket PING, on the websocket itself. Set explicitly rather than
-         * left to the library default, because this is the frame the relay
+         * left to the library default, because this is the frame the HSC
          * counts as proof of life and the one that refreshes the NAT mapping
          * on the way out. Quiet connections were being dropped without it. */
         .ping_interval_sec = HYPERWISOR_WS_PING_INTERVAL_MS / 1000,
@@ -351,8 +431,43 @@ esp_err_t hyperwisor_ws_send(const char *data, int len)
     if (!s_ws_client || !s_ws_connected) {
         return ESP_ERR_INVALID_STATE;
     }
+
+    /* An open socket is not a usable one.
+     *
+     * This used to check only s_ws_connected, which goes true when TCP/TLS is
+     * up -- seconds before the HSC challenge is answered. Anything sent in that
+     * window is discarded by the server as a pre-auth frame, while this
+     * function returned ESP_OK. A panel whose button was pressed during startup
+     * therefore reported success and did nothing, which reads as a flaky
+     * platform rather than a race (observed 2026-10-30 on the bound_tile
+     * example: emit() returned ESP_OK 17 seconds before auth_ok).
+     *
+     * The Arduino library has always held frames back here. This brings the
+     * ESP-IDF client into line, and returns a distinct error so a caller can
+     * tell "not ready yet" from "send failed". */
+    if (s_hsc_enabled && !s_authenticated) {
+        if (!s_warned_pre_auth_send) {
+            s_warned_pre_auth_send = true;   /* once per connection, not per frame */
+            ESP_LOGW(TAG, "send held: HSC handshake not finished (frame dropped)");
+        }
+        return ESP_ERR_NOT_FINISHED;
+    }
     int l = (len > 0) ? len : strlen(data);
     int ret = esp_websocket_client_send_text(s_ws_client, data, l, pdMS_TO_TICKS(5000));
+    return (ret >= 0) ? ESP_OK : ESP_FAIL;
+}
+
+static esp_err_t ws_send_raw_json(cJSON *json)
+{
+    if (!s_ws_client || !s_ws_connected) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    char *str = cJSON_PrintUnformatted(json);
+    if (!str) {
+        return ESP_FAIL;
+    }
+    int ret = esp_websocket_client_send_text(s_ws_client, str, strlen(str), pdMS_TO_TICKS(5000));
+    free(str);
     return (ret >= 0) ? ESP_OK : ESP_FAIL;
 }
 
