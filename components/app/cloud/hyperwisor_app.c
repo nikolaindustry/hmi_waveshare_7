@@ -16,6 +16,7 @@
 #include "hvac_controller.h"
 #include "hvac_config.h"
 #include "modbus_task.h"
+#include "owner_name.h"
 
 #include "esp_log.h"
 #include "esp_err.h"
@@ -179,6 +180,10 @@ static void build_status_payload(cJSON *payload)
     }
     cJSON_AddNumberToObject(hvac, "target_c", st.target_c);
     cJSON_AddStringToObject(hvac, "mode",     hvac_mode_str(st.mode));
+
+    /* The greeting shown on the panel's Overview tab, so an app can display
+     * and edit the current value without a second round trip. */
+    cJSON_AddStringToObject(payload, "welcome", owner_name_get());
 }
 
 /* ==================== Custom command handlers ==================== */
@@ -453,6 +458,23 @@ static void handle_config(const char *from, cJSON *payload)
         cJSON *params = cJSON_GetObjectItem(act, "params");
         if (!cJSON_IsObject(params)) continue;
 
+        /* The panel's greeting name.
+         *
+         * Not a save_field(): owner_name owns its own NVS namespace ("cfg"
+         * / "owner") and notifies the Overview tab's listener, which re-fits
+         * the cursive font for the new length. Writing it here instead would
+         * persist a second copy that nothing reads and leave the greeting
+         * stale until a reboot. */
+        const char *welcome = cJSON_GetStringValue(cJSON_GetObjectItem(params, "welcome"));
+        if (!welcome) welcome = cJSON_GetStringValue(cJSON_GetObjectItem(params, "owner"));
+        if (welcome) {
+            if (owner_name_set(welcome) == ESP_OK) {
+                ESP_LOGI(TAG, "config: welcome name = %s", welcome);
+            } else {
+                ESP_LOGW(TAG, "config: could not store welcome name");
+            }
+        }
+
         save_field(params, HYPERWISOR_APP_KEY_TARGET,   s_target_id,    sizeof(s_target_id));
         save_field(params, HYPERWISOR_APP_KEY_W_TEMP,   s_w_temp,       sizeof(s_w_temp));
         save_field(params, HYPERWISOR_APP_KEY_W_HPA,    s_w_hpa,        sizeof(s_w_hpa));
@@ -473,6 +495,7 @@ static void handle_config(const char *from, cJSON *payload)
     cJSON *resp = cJSON_CreateObject();
     cJSON_AddStringToObject(resp, "status", "ok");
     cJSON_AddStringToObject(resp, "targetid", s_target_id);
+    cJSON_AddStringToObject(resp, "welcome",  owner_name_get());
     hyperwisor_emit(from, "config", "response", resp);
 }
 
