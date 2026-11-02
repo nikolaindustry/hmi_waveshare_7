@@ -179,6 +179,7 @@ Any action. Returns everything in one reply:
 {
   "relays": [ { "relay": 0, "state": false }, … ],
   "bmp280": { "valid": true, "temp_c": 21.4, "hpa": 1013.2 },
+  "welcome": "Mayur",
   "hvac": {
     "power": true, "auto": false,
     "fan_level": 3, "fan_step": 2,
@@ -202,6 +203,23 @@ Any action. Returns everything in one reply:
 
 Tells the panel which dashboard **widget ids** to push live values into, so the
 panel updates the dashboard without the dashboard polling. Persisted in NVS.
+
+### The welcome name
+
+`config` also carries the greeting shown on the panel's Overview tab:
+
+```json
+{ "command": "config",
+  "actions": [ { "action": "set", "params": { "welcome": "Mayur" } } ] }
+```
+
+`owner` is accepted as a synonym. Up to **32 characters**
+(`OWNER_NAME_MAX`); the panel persists it itself under NVS `cfg`/`owner` and
+re-fits its cursive font to the new length, so it repaints as the command
+lands. The current value comes back in both `config`'s ack and `get_status`,
+so an app can show and edit it in one round trip.
+
+### Widget wiring
 
 ```json
 { "command": "config",
