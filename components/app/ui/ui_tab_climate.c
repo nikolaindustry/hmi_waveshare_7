@@ -5,6 +5,7 @@
 #include "hvac_controller.h"
 #include "hmi_role.h"
 #include "hmi_sync.h"
+#include "modbus_task.h"   /* modbus_task_state_seq() */
 #include "esp_log.h"
 #include <stdio.h>
 
@@ -29,6 +30,10 @@ static lv_obj_t *s_cabin_card;
 static lv_obj_t *s_cabin_temp_lbl;
 static lv_obj_t *s_cabin_press_lbl;
 static lv_timer_t *s_cabin_timer;
+/* Last state counter this tab repainted for, and a divider so the slow
+ * sensor is still read once a second on a 250 ms timer. */
+static uint32_t    s_ac_last_seq;
+static int         s_cabin_div;
 
 /* live HVAC status strip (bottom of the controls card) */
 static lv_obj_t *s_hvac_toggle;      /* clickable "[+] Details" header  */
@@ -248,6 +253,30 @@ static void build_hero(lv_obj_t *content)
 static void cabin_tick(lv_timer_t *t)
 {
     (void)t;
+
+    /* Repaint the AC controls when ac_state changed under us.
+     *
+     * The touch handlers mutate state and call refresh_*() themselves, so
+     * they were always instant. A change arriving from the CLOUD, the
+     * wireless HMI or the wired secondary only mutates state -- nothing in
+     * this tab was watching, so the toggles and sliders kept showing the old
+     * values until the tab was rebuilt by switching away and back. That is
+     * the "AC screen does not respond" report.
+     *
+     * ui_tab_control and ui_tab_overview already solve this by comparing
+     * modbus_task_state_seq(); this does the same, on the timer that is
+     * already here rather than a second one to keep alive and free. */
+    uint32_t seq = modbus_task_state_seq();
+    if (seq != s_ac_last_seq) {
+        s_ac_last_seq = seq;
+        refresh_all();
+    }
+
+    /* The sensor is slow and does not need the faster tick, so read it
+     * every fourth pass. */
+    if (++s_cabin_div < 4) goto hvac_strip;
+    s_cabin_div = 0;
+
     if (s_cabin_temp_lbl) {
         float tc = 0.0f, ph = 0.0f;
         if (bmp280_get(&tc, &ph)) {
@@ -259,6 +288,7 @@ static void cabin_tick(lv_timer_t *t)
         }
     }
 
+hvac_strip:
     /* ---- HVAC status strip ---- */
     if (!s_hvac_mode_lbl) return;
     hvac_status_t h;
@@ -579,7 +609,8 @@ void ui_tab_climate_build(lv_obj_t *content)
      * first tick -- the labels just stay at "--" until bmp280_get()
      * returns true. */
     if (!s_cabin_timer) {
-        s_cabin_timer = lv_timer_create(cabin_tick, 1000, NULL);
+        s_cabin_div = 3;   /* read the sensor on the very first tick */
+        s_cabin_timer = lv_timer_create(cabin_tick, 250, NULL);
         cabin_tick(NULL);   /* immediate first paint if sensor is ready */
     }
     ESP_LOGI(TAG, "climate tab built");

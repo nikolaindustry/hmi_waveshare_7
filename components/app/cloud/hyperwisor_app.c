@@ -400,6 +400,17 @@ static void handle_hvac_control(const char *from, cJSON *payload)
         }
     }
 
+    /* Tell any open screen that ac_state moved.
+     *
+     * relay_control and rgb_control go through modbus_task_request*(), which
+     * bumps the counter as a side effect. hvac_control never touches Modbus
+     * -- the HVAC controller owns those coils and drives them on its own tick
+     * -- so nothing advanced the counter and the panel's Climate tab kept
+     * showing the old toggle and slider positions until it was rebuilt by
+     * switching tabs. hmi_sync does exactly this for the same reason when it
+     * applies an AC intent from the wireless HMI. */
+    modbus_task_bump_seq();
+
     cJSON *resp = cJSON_CreateObject();
     cJSON_AddStringToObject(resp, "status", "ok");
     cJSON_AddItemToObject  (resp, "applied", applied);
